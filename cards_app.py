@@ -29,6 +29,7 @@ def log_event(message):
 
 # --- Real API Integration ---
 def call_llm_api(theme):
+    api_key = st.secrets["GEMINI_API_KEY"]
     """
     To use real AI: 
     1. pip install google-genai (or openai)
