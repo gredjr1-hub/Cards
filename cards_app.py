@@ -72,11 +72,16 @@ st.markdown("""
 .is-targetable .flip-card-inner { box-shadow: 0 0 0 4px rgba(255,205,0,0.5), 0 0 20px rgba(255,205,0,0.6); cursor: crosshair; }
 .is-selected .flip-card-inner { box-shadow: 0 0 0 4px rgba(74,140,255,0.5), 0 0 20px rgba(74,140,255,0.6); }
 
-/* Combat Animations */
+/* Combat & Death Animations */
 @keyframes lungeUp { 0% { transform: translateY(0); } 50% { transform: translateY(-30px) scale(1.05); } 100% { transform: translateY(0); } }
 @keyframes shakeDamage { 0% { transform: translateX(0); filter: brightness(1); } 20% { transform: translateX(-10px); filter: brightness(2) hue-rotate(-50deg); } 40% { transform: translateX(10px); } 60% { transform: translateX(-10px); } 80% { transform: translateX(10px); } 100% { transform: translateX(0); filter: brightness(1); } }
+@keyframes fadeOutDown { 0% { opacity: 1; transform: translateY(0) scale(1); filter: grayscale(0%); } 100% { opacity: 0; transform: translateY(30px) scale(0.9); filter: grayscale(100%); } }
+@keyframes fadeOutUp { 0% { opacity: 1; transform: translateY(0) scale(1); filter: brightness(1); } 50% { filter: brightness(2); } 100% { opacity: 0; transform: translateY(-30px) scale(1.1); filter: brightness(0); } }
+
 .anim-attack .flip-card-inner { animation: lungeUp 0.4s ease forwards; }
 .anim-damage .flip-card-inner { animation: shakeDamage 0.4s ease forwards; }
+.anim-death { animation: fadeOutDown 0.6s ease forwards; pointer-events: none; }
+.anim-consume { animation: fadeOutUp 0.6s ease forwards; pointer-events: none; }
 
 .stButton button { width: 100%; border-radius: 8px; font-weight: bold; margin-top: 5px; }
 </style>
@@ -107,6 +112,12 @@ def check_win_condition():
     elif st.session_state.player_hp <= 0:
         st.session_state.game_over = True
         st.session_state.winner = "Enemy"
+
+def cleanup_dead_cards():
+    """Removes cards flagged for death/consumption after their animation finishes."""
+    st.session_state.board = [c for c in st.session_state.board if not c.get('is_dead', False)]
+    st.session_state.enemy_board = [c for c in st.session_state.enemy_board if not c.get('is_dead', False)]
+    st.session_state.hand = [c for c in st.session_state.hand if not c.get('is_consumed', False)]
 
 # --- Live API Integration ---
 def call_llm_api(theme):
@@ -150,9 +161,9 @@ def call_llm_api(theme):
         return None
 
 def fetch_real_ai_image(prompt: str) -> str:
-    # Cleaner URL parsing to prevent bot protection trips
     safe_prompt = urllib.parse.quote(prompt.replace('"', '').replace("'", "") + ", fantasy trading card portrait")
     seed = random.randint(1, 100000)
+    # Replaced the broken markdown wrapper with a clean URL string
     return f"[https://image.pollinations.ai/prompt/](https://image.pollinations.ai/prompt/){safe_prompt}?width=256&height=384&nologo=true&n=1&seed={seed}"
 
 # --- Game Logic ---
@@ -170,6 +181,8 @@ def setup_game(theme):
             card['rarity'] = card.get('rarity', 'Common')
             card['desc'] = card.get('desc', 'A combatant enters the fray.')
             card['ability_used'] = False
+            card['is_dead'] = False
+            card['is_consumed'] = False
             card['image'] = fetch_real_ai_image(f"{card['name']}, {theme}")
             deck.append(card.copy())
         random.shuffle(deck)
@@ -194,19 +207,25 @@ def setup_game(theme):
     st.session_state.game_over = False
     st.session_state.winner = None
 
-def play_card(card_index, is_player=True):
+def play_card(card_id, is_player=True):
+    cleanup_dead_cards()
     hand = st.session_state.hand if is_player else st.session_state.enemy_hand
     board = st.session_state.board if is_player else st.session_state.enemy_board
     deck = st.session_state.deck if is_player else st.session_state.enemy_deck
 
-    card = hand.pop(card_index)
+    card_idx = next((i for i, c in enumerate(hand) if c['id'] == card_id), None)
+    if card_idx is None: return
+
+    card = hand.pop(card_idx)
     board.append(card)
     log_event(f"🃏 {'Player' if is_player else 'Enemy'} deployed {card['name']}.")
     if deck: hand.append(deck.pop())
 
-def apply_buff(buff_idx, target_idx):
-    buff_card = st.session_state.hand.pop(buff_idx)
-    target_card = st.session_state.board[target_idx]
+def apply_buff(buff_id, target_id):
+    cleanup_dead_cards()
+    buff_card = next((c for c in st.session_state.hand if c['id'] == buff_id), None)
+    target_card = next((c for c in st.session_state.board if c['id'] == target_id), None)
+    if not buff_card or not target_card: return
     
     mods = buff_card.get('stat_modifier', {})
     atk_mod = mods.get('atk', 0)
@@ -215,12 +234,17 @@ def apply_buff(buff_idx, target_idx):
     target_card['atk'] = target_card.get('atk', 0) + atk_mod
     target_card['def'] = target_card.get('def', 0) + def_mod
     
+    # Flag buff for consume animation
+    buff_card['is_consumed'] = True 
     log_event(f"✨ Applied {buff_card['name']} to {target_card['name']} (+{atk_mod} ATK, +{def_mod} DEF)!")
     st.session_state.animation_state = {'type': 'buff', 'target_id': target_card['id']}
     if st.session_state.deck: st.session_state.hand.append(st.session_state.deck.pop())
 
-def trigger_ability(board_idx):
-    card = st.session_state.board[board_idx]
+def trigger_ability(card_id):
+    cleanup_dead_cards()
+    card = next((c for c in st.session_state.board if c['id'] == card_id), None)
+    if not card: return
+    
     card['ability_used'] = True
     ab_name = card.get('ability', {}).get('name', 'Ability')
     
@@ -228,9 +252,11 @@ def trigger_ability(board_idx):
     log_event(f"⚡ {card['name']} used {ab_name}! Dealt 2 DMG to Enemy Leader.")
     check_win_condition()
 
-def resolve_attack(attacker_idx: int, target_idx: int):
-    attacker = st.session_state.board[attacker_idx]
-    target = st.session_state.enemy_board[target_idx]
+def resolve_attack(attacker_id, target_id):
+    cleanup_dead_cards()
+    attacker = next((c for c in st.session_state.board if c['id'] == attacker_id), None)
+    target = next((c for c in st.session_state.enemy_board if c['id'] == target_id), None)
+    if not attacker or not target: return
 
     atk = int(attacker.get('atk', 0))
     target['def'] = int(target.get('def', 0)) - atk
@@ -241,12 +267,15 @@ def resolve_attack(attacker_idx: int, target_idx: int):
 
     if target['def'] <= 0:
         log_event(f"💀 {target['name']} was destroyed!")
-        st.session_state.enemy_board.pop(target_idx)
+        target['is_dead'] = True # Flag for death animation
     
     check_win_condition()
 
-def resolve_direct_attack(attacker_idx: int):
-    attacker = st.session_state.board[attacker_idx]
+def resolve_direct_attack(attacker_id):
+    cleanup_dead_cards()
+    attacker = next((c for c in st.session_state.board if c['id'] == attacker_id), None)
+    if not attacker: return
+
     atk = int(attacker.get('atk', 0))
     st.session_state.enemy_hp -= atk
     st.session_state.attacks_used.add(attacker.get('id'))
@@ -256,25 +285,28 @@ def resolve_direct_attack(attacker_idx: int):
     check_win_condition()
 
 def execute_enemy_turn():
+    cleanup_dead_cards()
     log_event("--- Enemy Turn ---")
     st.session_state.animation_state = {} 
     
     if st.session_state.enemy_hand and len(st.session_state.enemy_board) < 5:
-        for i, c in enumerate(st.session_state.enemy_hand):
+        for c in st.session_state.enemy_hand:
             if c.get('type') == 'Attack':
-                play_card(i, is_player=False)
+                play_card(c['id'], is_player=False)
                 break
 
     for enemy_card in list(st.session_state.enemy_board):
-        if enemy_card.get('type') == 'Attack':
+        if enemy_card.get('type') == 'Attack' and not enemy_card.get('is_dead'):
             atk = int(enemy_card.get('atk', 0))
-            if st.session_state.board:
-                target = st.session_state.board[0]
+            valid_targets = [c for c in st.session_state.board if not c.get('is_dead')]
+            
+            if valid_targets:
+                target = valid_targets[0]
                 target['def'] = int(target.get('def', 0)) - atk
                 log_event(f"⚔️ Enemy {enemy_card['name']} hit {target['name']} for {atk} DMG!")
                 if target['def'] <= 0:
                     log_event(f"💀 Your {target['name']} was destroyed!")
-                    st.session_state.board.pop(0)
+                    target['is_dead'] = True
             else:
                 st.session_state.player_hp -= atk
                 log_event(f"💥 Enemy {enemy_card['name']} hit YOU for {atk} DMG!")
@@ -290,15 +322,14 @@ def end_turn():
     execute_enemy_turn()
 
 # --- UI Rendering Helpers ---
-def render_card(card, location_index, location_type, is_enemy=False):
+def render_card(card, location_type, is_enemy=False):
     card_key = f"{location_type}_{card['id']}"
 
     is_selected_attacker = (not is_enemy and location_type == 'board' and st.session_state.selected_attacker == card.get('id'))
     is_selected_buff = (not is_enemy and location_type == 'hand' and st.session_state.selected_buff == card.get('id'))
-    is_targetable_enemy = (is_enemy and location_type == 'eboard' and st.session_state.selected_attacker is not None)
-    is_targetable_friendly = (not is_enemy and location_type == 'board' and st.session_state.selected_buff is not None)
+    is_targetable_enemy = (is_enemy and location_type == 'eboard' and st.session_state.selected_attacker is not None and not card.get('is_dead'))
+    is_targetable_friendly = (not is_enemy and location_type == 'board' and st.session_state.selected_buff is not None and not card.get('is_dead'))
 
-    # Wrap the entire card in a label linked to a hidden checkbox. This creates the click-to-flip CSS mechanism.
     wrapper_classes = [f"rarity-{card.get('rarity', 'Common')}"]
     if is_selected_attacker or is_selected_buff: wrapper_classes.append("is-selected")
     if is_targetable_enemy or is_targetable_friendly: wrapper_classes.append("is-targetable")
@@ -306,8 +337,11 @@ def render_card(card, location_index, location_type, is_enemy=False):
     anim_state = st.session_state.get('animation_state', {})
     if anim_state.get('attacker_id') == card['id']: wrapper_classes.append("anim-attack")
     if anim_state.get('target_id') == card['id']: wrapper_classes.append("anim-damage")
+    
+    # Apply death/consume animation states
+    if card.get('is_dead'): wrapper_classes.append("anim-death")
+    if card.get('is_consumed'): wrapper_classes.append("anim-consume")
 
-    # Front construction (HTML formatting fixed to prevent artifacts)
     front_stats = ""
     if card.get('type') == 'Attack':
         front_stats = f"""
@@ -317,11 +351,9 @@ def render_card(card, location_index, location_type, is_enemy=False):
         </div>
         """
         
-    # The onerror attribute handles blocked images instantly
     fallback_img = "[https://placehold.co/256x384/1E1E24/FFF?text=Image](https://placehold.co/256x384/1E1E24/FFF?text=Image)\\nBlocked"
     img_tag = f"<img src='{card.get('image', '')}' onerror=\"this.onerror=null;this.src='{fallback_img}';\" style='width:100%; height:100%; object-fit:cover; opacity:0.9;'>"
 
-    # Back construction
     back_html = f"""
     <div style='padding:15px; flex-grow:1; overflow-y:auto;'>
         <h4 style='margin:0 0 5px 0; border-bottom:1px solid #555; padding-bottom:5px; font-size:16px;'>{card['name']}</h4>
@@ -340,7 +372,6 @@ def render_card(card, location_index, location_type, is_enemy=False):
         mods = card.get('stat_modifier', {})
         back_html += f"<div style='padding:10px; font-weight:bold; font-size:14px; border-top:1px solid #555; background:rgba(0,0,0,0.4); text-align:center;'>Buff: +{mods.get('atk',0)} ATK / +{mods.get('def',0)} DEF</div>"
 
-    # Assemble Card
     card_html = f"""
     <div class='flip-card {' '.join(wrapper_classes)}'>
         <label style='display:block; width:100%; height:100%; margin:0; cursor:pointer;'>
@@ -362,45 +393,46 @@ def render_card(card, location_index, location_type, is_enemy=False):
     """
     st.markdown(textwrap.dedent(card_html).strip(), unsafe_allow_html=True)
 
-    # --- Interaction Buttons (Always centered below the card) ---
-    if not is_enemy and location_type == 'hand':
-        if card.get('type') == 'Attack':
-            if st.button("Deploy", key=f"play_{card_key}", type="primary"):
-                play_card(location_index, is_player=True); st.rerun()
-        elif card.get('type') == 'Buff':
-            if is_selected_buff:
-                if st.button("Cancel", key=f"cancel_{card_key}"):
+    # --- Interaction Buttons ---
+    is_disabled = card.get('is_dead', False) or card.get('is_consumed', False)
+    
+    if not is_disabled:
+        if not is_enemy and location_type == 'hand':
+            if card.get('type') == 'Attack':
+                if st.button("Deploy", key=f"play_{card_key}", type="primary"):
+                    play_card(card['id'], is_player=True); st.rerun()
+            elif card.get('type') == 'Buff':
+                if is_selected_buff:
+                    if st.button("Cancel", key=f"cancel_{card_key}"):
+                        st.session_state.selected_buff = None; st.rerun()
+                else:
+                    if st.button("Use Buff", key=f"use_{card_key}", type="primary"):
+                        st.session_state.selected_buff = card['id']
+                        st.session_state.selected_attacker = None; st.rerun()
+
+        elif not is_enemy and location_type == 'board':
+            if is_targetable_friendly:
+                if st.button("Apply Buff Here", key=f"apply_{card_key}", type="primary"):
+                    apply_buff(st.session_state.selected_buff, card['id'])
                     st.session_state.selected_buff = None; st.rerun()
-            else:
-                if st.button("Use Buff", key=f"use_{card_key}", type="primary"):
-                    st.session_state.selected_buff = card.get('id')
-                    st.session_state.selected_attacker = None; st.rerun()
-
-    elif not is_enemy and location_type == 'board':
-        if is_targetable_friendly:
-            if st.button("Apply Buff Here", key=f"apply_{card_key}", type="primary"):
-                buff_idx = next((i for i, c in enumerate(st.session_state.hand) if c['id'] == st.session_state.selected_buff), None)
-                if buff_idx is not None: apply_buff(buff_idx, location_index)
-                st.session_state.selected_buff = None; st.rerun()
-        
-        elif card.get('type') == 'Attack':
-            can_attack = card.get('id') not in st.session_state.attacks_used
-            if is_selected_attacker:
-                if st.button("Cancel", key=f"cancel_atk_{card_key}"):
-                    st.session_state.selected_attacker = None; st.rerun()
-            else:
-                if st.button("⚔️ Attack", key=f"atk_{card_key}", type="primary", disabled=not can_attack):
-                    st.session_state.selected_attacker = card.get('id'); st.rerun()
             
-            if 'ability' in card and not card.get('ability_used', False):
-                if st.button("✨ Ability", key=f"ab_{card_key}"):
-                    trigger_ability(location_index); st.rerun()
+            elif card.get('type') == 'Attack':
+                can_attack = card.get('id') not in st.session_state.attacks_used
+                if is_selected_attacker:
+                    if st.button("Cancel", key=f"cancel_atk_{card_key}"):
+                        st.session_state.selected_attacker = None; st.rerun()
+                else:
+                    if st.button("⚔️ Attack", key=f"atk_{card_key}", type="primary", disabled=not can_attack):
+                        st.session_state.selected_attacker = card['id']; st.rerun()
+                
+                if 'ability' in card and not card.get('ability_used', False):
+                    if st.button("✨ Ability", key=f"ab_{card_key}"):
+                        trigger_ability(card['id']); st.rerun()
 
-    elif is_enemy and location_type == 'eboard' and st.session_state.selected_attacker:
-        attacker_idx = next((i for i, c in enumerate(st.session_state.board) if c['id'] == st.session_state.selected_attacker), None)
-        if attacker_idx is not None and st.button("🎯 Strike", key=f"tgt_{card_key}", type="primary"):
-            resolve_attack(attacker_idx, location_index)
-            st.session_state.selected_attacker = None; st.rerun()
+        elif is_enemy and location_type == 'eboard' and st.session_state.selected_attacker:
+            if st.button("🎯 Strike", key=f"tgt_{card_key}", type="primary"):
+                resolve_attack(st.session_state.selected_attacker, card['id'])
+                st.session_state.selected_attacker = None; st.rerun()
 
 # --- Main UI Rendering ---
 if not st.session_state.game_active:
@@ -424,6 +456,10 @@ elif st.session_state.game_over:
         st.rerun()
 
 else:
+    # Lore display injected back into active game
+    with st.expander("📖 Scenario Lore", expanded=False): st.write(st.session_state.lore)
+    st.write("---")
+    
     col1, col2, col3, col4 = st.columns([2, 1, 1, 2])
     with col1:
         if st.session_state.selected_buff: st.info("⬆️ Select a friendly card to buff.")
@@ -442,13 +478,12 @@ else:
         if st.session_state.enemy_board:
             eboard_cols = st.columns(max(len(st.session_state.enemy_board), 1))
             for i, card in enumerate(st.session_state.enemy_board):
-                with eboard_cols[i]: render_card(card, i, "eboard", is_enemy=True)
+                with eboard_cols[i]: render_card(card, "eboard", is_enemy=True)
         else:
             st.caption("Enemy field is empty.")
             if st.session_state.selected_attacker:
-                attacker_idx = next((i for i, c in enumerate(st.session_state.board) if c['id'] == st.session_state.selected_attacker), None)
-                if attacker_idx is not None and st.button("🎯 Target Enemy Leader", key="tgt_enemy", type="primary", use_container_width=True):
-                    resolve_direct_attack(attacker_idx)
+                if st.button("🎯 Target Enemy Leader", key="tgt_enemy", type="primary", use_container_width=True):
+                    resolve_direct_attack(st.session_state.selected_attacker)
                     st.session_state.selected_attacker = None; st.rerun()
 
         st.markdown("<hr style='border-color: #555;'>", unsafe_allow_html=True)
@@ -457,7 +492,7 @@ else:
         if st.session_state.board:
             board_cols = st.columns(max(len(st.session_state.board), 1))
             for i, card in enumerate(st.session_state.board):
-                with board_cols[i]: render_card(card, i, "board", is_enemy=False)
+                with board_cols[i]: render_card(card, "board", is_enemy=False)
         else:
             st.caption("Your field is empty.")
 
@@ -472,7 +507,7 @@ else:
     if st.session_state.hand:
         hand_cols = st.columns(len(st.session_state.hand))
         for i, card in enumerate(st.session_state.hand):
-            with hand_cols[i]: render_card(card, i, "hand", is_enemy=False)
+            with hand_cols[i]: render_card(card, "hand", is_enemy=False)
 
     st.write("---")
     if st.button("Surrender & Restart"):
