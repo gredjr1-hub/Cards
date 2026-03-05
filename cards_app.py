@@ -163,9 +163,11 @@ def call_llm_api(theme):
         return None
 
 def fetch_sprite_image(card_name: str) -> str:
+    # CRITICAL FIX: Splitting the URL into parts so the chat UI doesn't format it into a broken link
     safe_name = urllib.parse.quote(card_name)
-    # CRITICAL FIX: Requesting .png instead of .svg avoids Streamlit HTML sanitization blocks
-    return f"[https://api.dicebear.com/8.x/pixel-art/png?seed=](https://api.dicebear.com/8.x/pixel-art/png?seed=){safe_name}&size=256"
+    protocol = "https://"
+    domain = "[api.dicebear.com/8.x/pixel-art/png](https://api.dicebear.com/8.x/pixel-art/png)"
+    return f"{protocol}{domain}?seed={safe_name}&size=256"
 
 # --- Game Logic ---
 def setup_game(theme):
@@ -347,8 +349,11 @@ def render_card(card, location_type, is_enemy=False):
     
     html += "<div class='flip-card-front'>"
     
-    # Updated fallback to a safe PNG service
-    fallback_img = "[https://dummyimage.com/256x384/1E1E24/FFFFFF.png&text=No+Image](https://dummyimage.com/256x384/1E1E24/FFFFFF.png&text=No+Image)"
+    # Split URL to avoid auto-formatting
+    fallback_protocol = "https://"
+    fallback_domain = "[dummyimage.com/256x384/1E1E24/FFFFFF.png&text=No+Image](https://dummyimage.com/256x384/1E1E24/FFFFFF.png&text=No+Image)"
+    fallback_img = f"{fallback_protocol}{fallback_domain}"
+    
     html += f"<img src='{card.get('image', '')}' onerror=\"this.onerror=null;this.src='{fallback_img}';\" style='width:100%; height:100%; object-fit:contain; opacity:0.9; background-color: #2b2b36; padding-bottom: 30px;'>"
     
     if card.get('type') == 'Attack':
