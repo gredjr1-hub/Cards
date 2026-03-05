@@ -164,13 +164,13 @@ def call_llm_api(theme):
         return None
 
 def fetch_ai_image(card_name: str, card_type: str, theme: str, api_key: str) -> str:
-    """Uses Google's Imagen 3 to generate high-quality art, with a robust fallback."""
+    """Attempts Imagen 3 first, falls back to DiceBear if it fails."""
     if card_type == "Buff":
         prompt_text = f"A magical item, spell, or object called '{card_name}'. Theme: {theme}. Single object focus, fantasy trading card illustration, masterpiece, dark background."
-        fallback_style = "icons" # Generates a cool item icon if Imagen fails
+        fallback_style = "icons" 
     else:
         prompt_text = f"A character or creature called '{card_name}'. Theme: {theme}. Fantasy trading card portrait, masterpiece, highly detailed."
-        fallback_style = "adventurer" # Generates an RPG character avatar if Imagen fails
+        fallback_style = "adventurer" 
         
     if api_key:
         try:
@@ -186,16 +186,17 @@ def fetch_ai_image(card_name: str, card_type: str, theme: str, api_key: str) -> 
                     output_mime_type="image/jpeg"
                 )
             )
-            # Encode the bytes securely into a Data URI so the browser loads it instantly
             b64 = base64.b64encode(result.generated_images[0].image.image_bytes).decode('utf-8')
             return f"data:image/jpeg;base64,{b64}"
-        except Exception as e:
-            # If Google blocks the prompt for safety reasons or rate limits, gracefully fall back
+        except Exception:
+            # Silently pass to fallback if Imagen limits are hit
             pass
             
     # Bulletproof Fallback: Thematic deterministic avatars
     safe_name = urllib.parse.quote(card_name)
-    return f"[https://api.dicebear.com/9.x/](https://api.dicebear.com/9.x/){fallback_style}/png?seed={safe_name}&size=256"
+    # Decodes to "[https://api.dicebear.com/9.x/](https://api.dicebear.com/9.x/)" so the chat UI doesn't see it!
+    db_base = base64.b64decode("aHR0cHM6Ly9hcGkuZGljZWJlYXIuY29tLzkueC8=").decode("utf-8")
+    return f"{db_base}{fallback_style}/png?seed={safe_name}&size=256"
 
 # --- Game Logic ---
 def setup_game(theme):
@@ -207,14 +208,12 @@ def setup_game(theme):
     st.session_state.active_stage = scenario.get("stage")
 
     def process_deck(cards, is_player):
-        # OPTIMIZATION: Generate the art for the unique cards ONLY ONCE (Reduces API calls from 64 to 16)
         for card in cards:
             if 'image' not in card:
                 card['image'] = fetch_ai_image(card['name'], card.get('type', 'Attack'), theme, api_key)
                 
-        # Now multiply the pre-painted cards into a playable deck
         deck = []
-        for i, card in enumerate(cards * 3): # 3 copies of 8 cards = 24 card deck
+        for i, card in enumerate(cards * 3):
             new_card = card.copy()
             new_card['id'] = f"{'p' if is_player else 'e'}_{i}_{random.randint(100,999)}"
             new_card['rarity'] = card.get('rarity', 'Common')
@@ -226,7 +225,6 @@ def setup_game(theme):
         random.shuffle(deck)
         return deck
 
-    # Paint the cards while showing a spinner
     st.session_state.deck = process_deck(scenario.get("player_cards", []), True)
     st.session_state.hand = [st.session_state.deck.pop() for _ in range(4)]
 
@@ -385,6 +383,7 @@ def render_card(card, location_type, is_enemy=False):
     
     html += "<div class='flip-card-front'>"
     
+    # Base64 Decodes to "[https://dummyimage.com/256x384/1E1E24/FFFFFF.png?text=No+Image](https://dummyimage.com/256x384/1E1E24/FFFFFF.png?text=No+Image)"
     fallback_img = base64.b64decode("aHR0cHM6Ly9kdW1teWltYWdlLmNvbS8yNTZ4Mzg0LzFFMUUyNC9GRkZGRkYucG5nP3RleHQ9Tm8rSW1hZ2U=").decode("utf-8")
     
     html += f"<img src='{card.get('image', fallback_img)}' referrerpolicy='no-referrer' onerror=\"this.onerror=null;this.src='{fallback_img}';\" style='width:100%; height:100%; object-fit:cover; opacity:0.9; background-color: #2b2b36;'>"
@@ -466,7 +465,7 @@ if not st.session_state.game_active:
     theme_input = st.text_input("Theme (e.g., 'Old School RuneScape', 'Cyberpunk Pirates'):")
     if st.button("Generate Scenario & Start", type="primary"):
         if theme_input:
-            with st.spinner("Writing Lore and Painting 16 Unique Cards with Imagen 3 (this takes about 30 seconds)..."):
+            with st.spinner("Forging cards and generating AI artwork..."):
                 setup_game(theme_input)
             st.rerun()
 
