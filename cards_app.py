@@ -4,6 +4,11 @@ import json
 import re
 import urllib.parse
 import textwrap
+try:
+    import requests
+except Exception:
+    requests = None
+import base64
 
 # --- Page Config ---
 st.set_page_config(page_title="AI Card Battler", layout="wide", initial_sidebar_state="collapsed")
@@ -115,6 +120,32 @@ def fetch_real_ai_image(prompt: str) -> str:
     safe_prompt = urllib.parse.quote(prompt + ", beautiful digital art, fantasy trading card illustration, masterpiece")
     seed = random.randint(1, 100000)
     return f"https://image.pollinations.ai/prompt/{safe_prompt}?width=256&height=384&nologo=true&seed={seed}"
+
+
+@st.cache_data(show_spinner=False, ttl=60*60)
+def _image_url_to_data_uri(url: str):
+    """Fetch remote image server-side and return a data: URI string.
+
+    This avoids browser-side blocks (CSP/cross-site) and makes rendering consistent.
+    """
+    if not url or requests is None:
+        return None
+    try:
+        r = requests.get(url, timeout=15)
+        r.raise_for_status()
+        content_type = r.headers.get('content-type', '').split(';')[0].strip().lower()
+        if not content_type.startswith('image/'):
+            return None
+        b64 = base64.b64encode(r.content).decode('ascii')
+        return f"data:{content_type};base64,{b64}"
+    except Exception:
+        return None
+
+
+def get_renderable_image_src(url: str) -> str:
+    """Prefer data-uri (fetched server-side). Fall back to the raw URL."""
+    data_uri = _image_url_to_data_uri(url)
+    return data_uri or url
 
 # --- Game Logic ---
 def setup_game(theme):
@@ -308,7 +339,7 @@ def render_card(card, location_index, location_type, is_enemy=False):
         # --- FRONT OF CARD ---
         card_html += f"""
 <div style='position: absolute; top: 0; left: 0; width: 100%; height: 100%;'>
-    <img src='{card.get("image", "")}' style='width: 100%; height: 100%; object-fit: cover; opacity: 0.85;'>
+    <img src='{get_renderable_image_src(card.get("image", ""))}' referrerpolicy='no-referrer' crossorigin='anonymous' style='width: 100%; height: 100%; object-fit: cover; opacity: 0.85;'>
 </div>
 <div style='position: absolute; bottom: 0; left: 0; width: 100%; background: rgba(0,0,0,0.82); padding: 8px; border-top: 1px solid {border_color};'>
     <h4 style='margin: 0; font-size: 16px; text-align: center;'>{card['name']}</h4>
@@ -330,10 +361,7 @@ def render_card(card, location_index, location_type, is_enemy=False):
             card_html += f"<div style='background: #333; padding: 5px; border-radius: 5px; margin-bottom: 10px;'><b style='font-size: 12px;'>✨ {ab.get('name','Ability')}</b><br><span style='font-size: 11px;'>Trigger: {ab.get('trigger','')}</span></div>"
 
         card_html += f"""
-    <div style='display: flex; justify-content: space-between; font-weight: bold; font-size: 18px; border-top: 1px solid #444; padding-top: 10px;'>
-        <span>⚔️ {atk_val}</span>
-        <span>🛡️ {def_val}</span>
-    </div>
+<div style='display:flex;justify-content:space-between;font-weight:bold;font-size:18px;border-top:1px solid #444;padding-top:10px;'><span>⚔️ {atk_val}</span><span>🛡️ {def_val}</span></div>
 </div>
 """
 
