@@ -164,8 +164,9 @@ def call_llm_api(theme):
         return None
 
 def fetch_ai_image(card_name: str, card_type: str, theme: str) -> str:
-    # Base64 encoded: "[https://pollinations.ai/p/](https://pollinations.ai/p/)"
-    api_url = base64.b64decode("aHR0cHM6Ly9wb2xsaW5hdGlvbnMuYWkvcC8=").decode("utf-8")
+    # CRITICAL FIX: Base64 encodes "[https://image.pollinations.ai/prompt/](https://image.pollinations.ai/prompt/)"
+    # This hits the raw image generator, preventing the web-UI redirect
+    api_url = base64.b64decode("aHR0cHM6Ly9pbWFnZS5wb2xsaW5hdGlvbnMuYWkvcHJvbXB0Lw==").decode("utf-8")
     
     # Image Prompt Engineering based on card type
     if card_type == "Buff":
@@ -359,8 +360,7 @@ def render_card(card, location_type, is_enemy=False):
     
     fallback_img = base64.b64decode("aHR0cHM6Ly9kdW1teWltYWdlLmNvbS8yNTZ4Mzg0LzFFMUUyNC9GRkZGRkYucG5nP3RleHQ9Tm8rSW1hZ2U=").decode("utf-8")
     
-    # Restored object-fit: cover so true AI art fills the card frame properly
-    html += f"<img src='{card.get('image', fallback_img)}' style='width:100%; height:100%; object-fit:cover; opacity:0.9; background-color: #2b2b36;'>"
+    html += f"<img src='{card.get('image', fallback_img)}' referrerpolicy='no-referrer' onerror=\"this.onerror=null;this.src='{fallback_img}';\" style='width:100%; height:100%; object-fit:cover; opacity:0.9; background-color: #2b2b36;'>"
     
     if card.get('type') == 'Attack':
         html += "<div style='position:absolute; bottom:35px; width:100%; display:flex; justify-content:space-between; padding:0 10px; font-weight:bold; font-size:16px; text-shadow:1px 1px 2px #000;'>"
