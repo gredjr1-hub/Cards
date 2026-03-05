@@ -163,12 +163,19 @@ def call_llm_api(theme):
         st.error(f"Failed to generate scenario from AI. Error: {e}")
         return None
 
-def fetch_sprite_image(card_name: str) -> str:
-    # Base64 encoded to completely blind the chat UI auto-formatter
-    # Decodes to: "[https://api.dicebear.com/9.x/pixel-art/png?seed=](https://api.dicebear.com/9.x/pixel-art/png?seed=)"
-    api_url = base64.b64decode("aHR0cHM6Ly9hcGkuZGljZWJlYXIuY29tLzkueC9waXhlbC1hcnQvcG5nP3NlZWQ9").decode("utf-8")
-    safe_name = urllib.parse.quote(card_name)
-    return f"{api_url}{safe_name}&size=256"
+def fetch_ai_image(card_name: str, card_type: str, theme: str) -> str:
+    # Base64 encoded: "[https://pollinations.ai/p/](https://pollinations.ai/p/)"
+    api_url = base64.b64decode("aHR0cHM6Ly9wb2xsaW5hdGlvbnMuYWkvcC8=").decode("utf-8")
+    
+    # Image Prompt Engineering based on card type
+    if card_type == "Buff":
+        prompt_text = f"An object, item, or magical effect called '{card_name}', theme: {theme}, single object focus, highly detailed fantasy trading card art, centered, masterpiece"
+    else:
+        prompt_text = f"A character or creature called '{card_name}', theme: {theme}, highly detailed fantasy trading card art, portrait, masterpiece"
+        
+    safe_prompt = urllib.parse.quote_plus(prompt_text)
+    seed = random.randint(1, 100000)
+    return f"{api_url}{safe_prompt}?width=256&height=384&seed={seed}&nologo=true"
 
 # --- Game Logic ---
 def setup_game(theme):
@@ -187,7 +194,7 @@ def setup_game(theme):
             card['ability_used'] = False
             card['is_dead'] = False
             card['is_consumed'] = False
-            card['image'] = fetch_sprite_image(card['name'])
+            card['image'] = fetch_ai_image(card['name'], card['type'], theme)
             deck.append(card.copy())
         random.shuffle(deck)
         return deck
@@ -350,10 +357,10 @@ def render_card(card, location_type, is_enemy=False):
     
     html += "<div class='flip-card-front'>"
     
-    # Decodes to: "[https://dummyimage.com/256x384/1E1E24/FFFFFF.png?text=No+Image](https://dummyimage.com/256x384/1E1E24/FFFFFF.png?text=No+Image)"
     fallback_img = base64.b64decode("aHR0cHM6Ly9kdW1teWltYWdlLmNvbS8yNTZ4Mzg0LzFFMUUyNC9GRkZGRkYucG5nP3RleHQ9Tm8rSW1hZ2U=").decode("utf-8")
     
-    html += f"<img src='{card.get('image', fallback_img)}' style='width:100%; height:100%; object-fit:contain; opacity:0.9; background-color: #2b2b36; padding-bottom: 30px;'>"
+    # Restored object-fit: cover so true AI art fills the card frame properly
+    html += f"<img src='{card.get('image', fallback_img)}' style='width:100%; height:100%; object-fit:cover; opacity:0.9; background-color: #2b2b36;'>"
     
     if card.get('type') == 'Attack':
         html += "<div style='position:absolute; bottom:35px; width:100%; display:flex; justify-content:space-between; padding:0 10px; font-weight:bold; font-size:16px; text-shadow:1px 1px 2px #000;'>"
@@ -432,7 +439,7 @@ if not st.session_state.game_active:
     theme_input = st.text_input("Theme (e.g., 'Old School RuneScape', 'Cyberpunk Pirates'):")
     if st.button("Generate Scenario & Start", type="primary"):
         if theme_input:
-            with st.spinner("Forging cards and generating sprites..."):
+            with st.spinner("Forging cards and generating AI artwork..."):
                 setup_game(theme_input)
             st.rerun()
 
