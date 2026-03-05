@@ -13,11 +13,9 @@ import base64
 # --- Page Config ---
 st.set_page_config(page_title="AI Card Battler", layout="wide", initial_sidebar_state="collapsed")
 
-
-# --- Global CSS (board feel + hover/target cues) ---
+# --- Global CSS ---
 st.markdown("""
 <style>
-/* Card interaction CSS */
 .card-shell { transition: transform 120ms ease, box-shadow 120ms ease, filter 120ms ease; }
 .card-shell:hover { transform: translateY(-2px) scale(1.01); filter: brightness(1.03); }
 .card-shell.targetable { cursor: crosshair; }
@@ -25,273 +23,117 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-
 # --- Initialize Session State ---
-if 'game_active' not in st.session_state: st.session_state.game_active = False
-if 'deck' not in st.session_state: st.session_state.deck = []
-if 'hand' not in st.session_state: st.session_state.hand = []
-if 'board' not in st.session_state: st.session_state.board = []
-if 'enemy_deck' not in st.session_state: st.session_state.enemy_deck = []
-if 'enemy_hand' not in st.session_state: st.session_state.enemy_hand = []
-if 'enemy_board' not in st.session_state: st.session_state.enemy_board = []
-if 'player_hp' not in st.session_state: st.session_state.player_hp = 30
-if 'enemy_hp' not in st.session_state: st.session_state.enemy_hp = 30
-if 'active_stage' not in st.session_state: st.session_state.active_stage = None
-if 'lore' not in st.session_state: st.session_state.lore = ""
-if 'turn_count' not in st.session_state: st.session_state.turn_count = 1
-if 'battle_log' not in st.session_state: st.session_state.battle_log = []
-# NEW: interactive targeting state
-if 'selected_attacker' not in st.session_state: st.session_state.selected_attacker = None  # stores attacker card id (player board)
-# NEW: per-turn attack exhaustion tracking
-if 'attacks_used' not in st.session_state: st.session_state.attacks_used = set()  # card ids that already attacked this turn
+state_defaults = {
+    'game_active': False, 'game_over': False, 'winner': None,
+    'deck': [], 'hand': [], 'board': [],
+    'enemy_deck': [], 'enemy_hand': [], 'enemy_board': [],
+    'player_hp': 30, 'enemy_hp': 30,
+    'active_stage': None, 'lore': "",
+    'turn_count': 1, 'battle_log': [],
+    'selected_attacker': None, 'attacks_used': set()
+}
+for k, v in state_defaults.items():
+    if k not in st.session_state: st.session_state[k] = v
 
 def log_event(message: str):
     st.session_state.battle_log.insert(0, message)
-    if len(st.session_state.battle_log) > 6:
-        st.session_state.battle_log.pop()
+    if len(st.session_state.battle_log) > 6: st.session_state.battle_log.pop()
 
-# --- Real API Integration ---
+def check_win_condition():
+    if st.session_state.enemy_hp <= 0:
+        st.session_state.game_over = True
+        st.session_state.winner = "Player"
+    elif st.session_state.player_hp <= 0:
+        st.session_state.game_over = True
+        st.session_state.winner = "Enemy"
 
-
-def _slug_words(s: str):
-    words = re.findall(r"[A-Za-z0-9]+", s)
-    return [w for w in words if w]
-
-
-def _generate_mock_scenario(theme: str) -> dict:
-    """Deterministic-ish but *theme-dependent* fallback when no real LLM is configured.
-
-    This prevents the app from showing the same lore/cards no matter what prompt is used.
-    """
-    words = _slug_words(theme) or ["Arcane", "Frontier"]
-    w1 = words[0].title()
-    w2 = (words[1] if len(words) > 1 else words[0]).title()
-
-    # Use a fresh RNG each time so reruns/new prompts change output even across app restarts.
-    # (We mix in system randomness instead of seeding only from theme.)
-    rng = random.Random()
-    rng.seed(random.SystemRandom().randint(1, 2**31 - 1))
-
-    pro_faction = rng.choice([
-        f"{w1} Wardens",
-        f"Order of {w1}",
-        f"{w1}-{w2} Vanguard",
-        f"{w1} Collective",
-    ])
-    ant_faction = rng.choice([
-        f"{w2} Syndicate",
-        f"{w2} Dominion",
-        f"The {w2} Cartel",
-        f"{w1} Reavers",
-    ])
-
-    mood = rng.choice(["neon", "ashen", "verdant", "stormlit", "clockwork", "void-touched"])
-    arena = rng.choice(["canopy", "harbor", "catacombs", "sky-rail", "ruined citadel", "salt flats"])
-
-    lore = (
-        f"In a {mood} {arena} shaped by the theme of **{theme}**, {pro_faction} hold the line against {ant_faction}. "
-        f"Every relic, rumor, and resource has become a weapon — and the battlefield itself remembers.
-
-"
-        f"As tensions flare, champions rise with strange new cards pulled from the same prompt that summoned this war. "
-        f"Victory isn't just damage dealt — it's control of the story." 
-    )
-
-    stage_effect = rng.choice(["acid_rain", "smog", "mana_surge", "sandstorm", "blackout", "gravity_flux"])
-    stage_name = rng.choice([
-        f"{mood.title()} {arena.title()}",
-        f"{w1} Rift",
-        f"The {w2} Verge",
-        f"{arena.title()} of {w1}",
-    ])
-    stage_desc = {
-        "acid_rain": "Corrosive rain falls. All cards lose 1 DEF at end of turn.",
-        "smog": "Choking smog rolls in. The first attack each turn deals -1 damage.",
-        "mana_surge": "Wild mana surges. Buffs last +1 turn.",
-        "sandstorm": "A sandstorm blinds combatants. Attacks have a 20% chance to miss.",
-        "blackout": "Systems flicker. Abilities trigger one turn later.",
-        "gravity_flux": "Gravity lurches. The highest ATK unit can't attack next turn.",
-    }[stage_effect]
-
-    def _rand_hex():
-        return f"#{rng.randint(0,255):02x}{rng.randint(0,255):02x}{rng.randint(0,255):02x}"
-
-    visuals = {
-        "css_gradient": f"linear-gradient(to bottom, {_rand_hex()}, {_rand_hex()})",
-        "weather_overlay": rng.choice(["rain", "fog", "sparks", "none"]),
-    }
-
-    nouns = ["Vanguard", "Stalker", "Sentinel", "Arcanist", "Corsair", "Scribe", "Warden", "Rider", "Shredder", "Drone"]
-    verbs = ["Sap", "Bolt", "Gloom", "Iron", "Star", "Rune", "Mist", "Flame", "Shade", "Pulse"]
-
-    def make_attack(name_prefix: str):
-        atk = rng.randint(2, 8)
-        df = rng.randint(2, 8)
-        return {
-            "name": f"{name_prefix} {rng.choice(nouns)}",
-            "type": "Attack",
-            "atk": atk,
-            "def": df,
-            "desc": rng.choice([
-                "A frontline defender forged for the decisive push.",
-                "Strikes fast, then vanishes into the board's shadows.",
-                "Built to punish greedy lines and sloppy positioning.",
-                "Turns momentum into damage with ruthless efficiency.",
-            ])
-        }
-
-    def make_buff(name_prefix: str):
-        a = rng.randint(1, 4)
-        d = rng.randint(0, 3)
-        dur = rng.randint(1, 3)
-        return {
-            "name": f"{name_prefix}-{rng.choice(['Surge','Ward','Bloom','Protocol','Charm'])}",
-            "type": "Buff",
-            "stat_modifier": {"atk": a, "def": d},
-            "duration_turns": dur,
-            "desc": rng.choice([
-                "Overcharges an ally's circuitry.",
-                "Hardens resolve — and armor.",
-                "A burst of advantage at exactly the right time.",
-                "Temporarily rewrites the rules of engagement.",
-            ])
-        }
-
-    # Build 8 cards each side (6 attack, 2 buff)
-    player_cards = []
-    enemy_cards = []
-    for _ in range(6):
-        player_cards.append(make_attack(rng.choice(verbs) + "-" + w1))
-        enemy_cards.append(make_attack(rng.choice(verbs) + "-" + w2))
-    for _ in range(2):
-        player_cards.append(make_buff(w1))
-        enemy_cards.append(make_buff(w2))
-
-    rng.shuffle(player_cards)
-    rng.shuffle(enemy_cards)
-
-    return {
-        "lore": lore,
-        "stage": {
-            "name": stage_name,
-            "type": "Stage",
-            "stage_effect": stage_effect,
-            "desc": stage_desc,
-            "visuals": visuals,
-        },
-        "player_cards": player_cards,
-        "enemy_cards": enemy_cards,
-    }
-
-
+# --- Live API Integration ---
 def call_llm_api(theme):
-    """Return scenario JSON.
-
-    - If GEMINI_API_KEY is configured and google-genai is available, use Gemini.
-    - Otherwise fall back to a theme-dependent procedural generator.
-    """
+    """Calls the Gemini API to generate the card game scenario."""
     api_key = st.secrets.get("GEMINI_API_KEY", "")
+    
+    if not api_key:
+        st.error("⚠️ GEMINI_API_KEY is missing. Please add it to your .streamlit/secrets.toml file.")
+        return None
 
     system_prompt = f"""
-Create a card game scenario based on the theme: '{theme}'.
-Return ONLY a JSON object with this exact structure:
-{{
-  "lore": "Two paragraphs describing the conflict, the setting, and the two opposing factions.",
-  "stage": {{"name": "Stage Name", "type": "Stage", "stage_effect": "acid_rain", "desc": "effect desc", "visuals": {{"css_gradient": "linear-gradient(...)", "weather_overlay": "rain"}}}},
-  "player_cards": [Generate 8 cards (Attack and Buff) for the protagonist faction],
-  "enemy_cards": [Generate 8 cards (Attack and Buff) for the antagonist faction]
-}}
-Attack cards need 'atk', 'def', and optionally an 'ability' object.
-Buff cards need 'stat_modifier' and 'duration_turns'.
-"""
+    You are an expert card game designer. Create a balanced, thematic card game scenario based ONLY on this theme: '{theme}'.
+    
+    Return ONLY a valid JSON object with this exact structure (no markdown formatting, no text outside the JSON):
+    {{
+      "lore": "Two paragraphs describing the conflict, the setting, and the two opposing factions.",
+      "stage": {{"name": "Stage Name", "type": "Stage", "stage_effect": "acid_rain", "desc": "effect desc", "visuals": {{"css_gradient": "linear-gradient(to bottom, #111111, #444444)", "weather_overlay": "none"}}}},
+      "player_cards": [ Generate exactly 8 cards (Attack and Buff) for the protagonist faction ],
+      "enemy_cards": [ Generate exactly 8 cards (Attack and Buff) for the antagonist faction ]
+    }}
+    
+    Rules for cards:
+    - Attack cards must have 'atk' (1-8), 'def' (1-8), and optionally an 'ability' object (trigger, effect_type).
+    - Buff cards must have 'stat_modifier' (e.g. {{"atk": 2, "def": 0}}) and 'duration_turns'.
+    """
 
-    # Try real API only if the user configured it.
-    if api_key:
-        try:
-            from google import genai  # type: ignore
-            client = genai.Client(api_key=api_key)
-            response = client.models.generate_content(model='gemini-2.5-pro', contents=system_prompt)
-            raw_response_text = getattr(response, 'text', None) or str(response)
-
-            cleaned_text = re.sub(r'```json
-|
-```|```', '', raw_response_text).strip()
-            return json.loads(cleaned_text)
-        except Exception as e:
-            st.warning(f"LLM call failed; using mock scenario instead. Details: {e}")
-
-    # Fallback: varied, theme-dependent mock
-    return _generate_mock_scenario(theme)
-
+    try:
+        from google import genai
+        client = genai.Client(api_key=api_key)
+        # Using gemini-2.5-pro for complex JSON structuring
+        response = client.models.generate_content(model='gemini-2.5-pro', contents=system_prompt)
+        raw_text = getattr(response, 'text', None) or str(response)
+        
+        # Clean markdown formatting if the AI disobeys
+        cleaned_text = re.sub(r'```json\n|\n```|```', '', raw_text).strip()
+        return json.loads(cleaned_text)
+        
+    except Exception as e:
+        st.error(f"Failed to generate scenario from AI. Error: {e}")
+        return None
 
 def fetch_real_ai_image(prompt: str) -> str:
-
-    """
-    Uses Pollinations.ai for instant, free, keyless AI image generation.
-    Generates a 256x384 portrait image perfect for trading cards.
-
-    IMPORTANT: return a *direct image URL* (not a markdown link),
-    so <img src='...'> works correctly.
-    """
     safe_prompt = urllib.parse.quote(prompt + ", beautiful digital art, fantasy trading card illustration, masterpiece")
     seed = random.randint(1, 100000)
-    return f"https://image.pollinations.ai/prompt/{safe_prompt}?width=256&height=384&nologo=true&seed={seed}"
-
+    return f"[https://image.pollinations.ai/prompt/](https://image.pollinations.ai/prompt/){safe_prompt}?width=256&height=384&nologo=true&seed={seed}"
 
 @st.cache_data(show_spinner=False, ttl=60*60)
 def _image_url_to_data_uri(url: str):
-    """Fetch remote image server-side and return a data: URI string.
-
-    This avoids browser-side blocks (CSP/cross-site) and makes rendering consistent.
-    """
-    if not url or requests is None:
-        return None
+    if not url or requests is None: return None
     try:
         r = requests.get(url, timeout=15)
         r.raise_for_status()
         content_type = r.headers.get('content-type', '').split(';')[0].strip().lower()
-        if not content_type.startswith('image/'):
-            return None
+        if not content_type.startswith('image/'): return None
         b64 = base64.b64encode(r.content).decode('ascii')
         return f"data:{content_type};base64,{b64}"
     except Exception:
         return None
 
-
 def get_renderable_image_src(url: str) -> str:
-    """Prefer data-uri (fetched server-side). Fall back to the raw URL."""
-    data_uri = _image_url_to_data_uri(url)
-    return data_uri or url
+    return _image_url_to_data_uri(url) or url
 
 # --- Game Logic ---
 def setup_game(theme):
     scenario = call_llm_api(theme)
-    if not scenario:
-        return
+    if not scenario: return
 
     st.session_state.lore = scenario.get("lore", "War has broken out.")
     st.session_state.active_stage = scenario.get("stage")
 
-    # Process Player Deck
     p_deck = []
+    # Create a 32 card deck from the 8 generated cards
     for i, card in enumerate(scenario.get("player_cards", []) * 4):
         card['id'] = f"p_{i}"
         card['is_flipped'] = False
         card['image'] = fetch_real_ai_image(f"{card['name']}, {theme} protagonist")
         p_deck.append(card.copy())
-
     random.shuffle(p_deck)
     st.session_state.deck = p_deck
     st.session_state.hand = [st.session_state.deck.pop() for _ in range(4)]
 
-    # Process Enemy Deck
     e_deck = []
     for i, card in enumerate(scenario.get("enemy_cards", []) * 4):
         card['id'] = f"e_{i}"
         card['is_flipped'] = False
         card['image'] = fetch_real_ai_image(f"{card['name']}, {theme} antagonist villain")
         e_deck.append(card.copy())
-
     random.shuffle(e_deck)
     st.session_state.enemy_deck = e_deck
     st.session_state.enemy_hand = [st.session_state.enemy_deck.pop() for _ in range(4)]
@@ -301,7 +143,10 @@ def setup_game(theme):
     st.session_state.turn_count = 1
     st.session_state.battle_log = ["The battle begins!"]
     st.session_state.selected_attacker = None
+    st.session_state.attacks_used = set()
     st.session_state.game_active = True
+    st.session_state.game_over = False
+    st.session_state.winner = None
 
 def play_card(card_index, is_player=True):
     hand = st.session_state.hand if is_player else st.session_state.enemy_hand
@@ -310,70 +155,49 @@ def play_card(card_index, is_player=True):
 
     card = hand.pop(card_index)
     card['is_flipped'] = False
-
     board.append(card)
     log_event(f"🃏 {'Player' if is_player else 'Enemy'} played {card['name']}.")
-    if deck:
-        hand.append(deck.pop())
+    if deck: hand.append(deck.pop())
 
 def _find_player_board_index_by_id(card_id: str):
     for idx, c in enumerate(st.session_state.board):
-        if c.get('id') == card_id:
-            return idx
+        if c.get('id') == card_id: return idx
     return None
 
 def resolve_attack(attacker_idx: int, target_idx: int):
-    """Resolve combat between a specific player attacker and specific enemy target."""
-    if attacker_idx is None or target_idx is None:
-        return
-
-    # Validate indexes in case the board changed since selection
-    if attacker_idx < 0 or attacker_idx >= len(st.session_state.board):
-        return
-    if target_idx < 0 or target_idx >= len(st.session_state.enemy_board):
-        return
+    if attacker_idx is None or target_idx is None: return
+    if attacker_idx < 0 or attacker_idx >= len(st.session_state.board): return
+    if target_idx < 0 or target_idx >= len(st.session_state.enemy_board): return
 
     attacker = st.session_state.board[attacker_idx]
     target = st.session_state.enemy_board[target_idx]
 
-    if attacker.get('type') != 'Attack':
-        log_event(f"⚠️ {attacker['name']} cannot attack (not an Attack card).")
-        return
+    if attacker.get('type') != 'Attack': return
 
     atk = int(attacker.get('atk', 0))
     target['def'] = int(target.get('def', 0)) - atk
     log_event(f"🎯 {attacker['name']} hit {target['name']} for {atk} DMG!")
-
-    # Mark attacker as exhausted for this turn
     st.session_state.attacks_used.add(attacker.get('id'))
 
     if target['def'] <= 0:
         log_event(f"💀 {target['name']} was destroyed!")
         st.session_state.enemy_board.pop(target_idx)
-
+    
+    check_win_condition()
 
 def resolve_direct_attack(attacker_idx: int):
-    """Attack the enemy hero directly (only when enemy board is empty)."""
-    if attacker_idx is None:
-        return
-    if attacker_idx < 0 or attacker_idx >= len(st.session_state.board):
-        return
-    if st.session_state.enemy_board:
-        return
+    if attacker_idx is None: return
+    if attacker_idx < 0 or attacker_idx >= len(st.session_state.board): return
+    if st.session_state.enemy_board: return
 
     attacker = st.session_state.board[attacker_idx]
-    if attacker.get('type') != 'Attack':
-        log_event(f"⚠️ {attacker['name']} cannot attack (not an Attack card).")
-        return
+    if attacker.get('type') != 'Attack': return
 
     atk = int(attacker.get('atk', 0))
     st.session_state.enemy_hp -= atk
     st.session_state.attacks_used.add(attacker.get('id'))
     log_event(f"💥 {attacker['name']} hit the enemy for {atk} DMG!")
-    if st.session_state.enemy_hp <= 0:
-        st.session_state.enemy_hp = 0
-        log_event("🏆 You win!")
-
+    check_win_condition()
 
 def execute_enemy_turn():
     log_event("--- Enemy Turn ---")
@@ -389,7 +213,6 @@ def execute_enemy_turn():
                 log_event(f"⚔️ {enemy_card['name']} hit {target['name']} for {atk} DMG!")
                 if target['def'] <= 0:
                     log_event(f"💀 {target['name']} was destroyed!")
-                    # If the destroyed card was selected as attacker, clear selection
                     if st.session_state.selected_attacker == target.get('id'):
                         st.session_state.selected_attacker = None
                     st.session_state.board.pop(0)
@@ -397,62 +220,41 @@ def execute_enemy_turn():
                 st.session_state.player_hp -= atk
                 log_event(f"💥 {enemy_card['name']} hit YOU for {atk} DMG!")
 
+    check_win_condition()
     st.session_state.turn_count += 1
     log_event("--- Your Turn ---")
-    # Reset player attack exhaustion at the start of the player's turn
     st.session_state.attacks_used = set()
 
 def end_turn():
-    # Clear any pending attack selection at end of turn
     st.session_state.selected_attacker = None
     execute_enemy_turn()
 
 # --- UI Rendering Helpers ---
 def render_card(card, location_index, location_type, is_enemy=False):
-    """
-    location_type:
-      - hand: player's hand
-      - board: player's field
-      - eboard: enemy field
-    """
     card_key = f"{location_type}_{card['id']}"
 
-    # Toggle flip state
     if st.button("🔄 Flip", key=f"btn_{card_key}"):
         card['is_flipped'] = not card.get('is_flipped', False)
         st.rerun()
 
-    # Determine selection highlight
     is_selected_attacker = (not is_enemy and location_type == 'board' and st.session_state.selected_attacker == card.get('id'))
     border_color = "#ff4a4a" if is_enemy else "#4a8cff"
     highlight = "0 0 0 4px rgba(74,140,255,0.35), 0 0 18px rgba(74,140,255,0.45)" if is_selected_attacker else "0 4px 8px rgba(0,0,0,0.6)"
 
-    # Targeting cues (when an attacker is selected, enemy cards become targetable)
     is_targetable_enemy = (is_enemy and location_type == 'eboard' and st.session_state.selected_attacker is not None)
     target_glow = "0 0 0 4px rgba(255,205,0,0.35), 0 0 18px rgba(255,205,0,0.35)" if is_targetable_enemy else ""
 
     extra_class = " selected" if is_selected_attacker else ""
     extra_class += " targetable" if is_targetable_enemy else ""
 
-    # CSS for the physical card look
-    # IMPORTANT: Streamlit markdown treats lines indented by 4+ spaces as a code block.
-    # Dedent HTML before rendering so you don't see literal <div> text.
     card_html = f"""
 <div class='card-shell{extra_class}' style='
-    background-color: #1e1e1e;
-    border: 3px solid {border_color};
-    border-radius: 12px;
+    background-color: #1e1e1e; border: 3px solid {border_color}; border-radius: 12px;
     box-shadow: {target_glow if (is_targetable_enemy and not is_selected_attacker) else highlight};
-    height: 320px;
-    overflow: hidden;
-    position: relative;
-    color: white;
-    font-family: sans-serif;
+    height: 320px; overflow: hidden; position: relative; color: white; font-family: sans-serif;
 '>
 """
-
     if not card.get('is_flipped', False):
-        # --- FRONT OF CARD ---
         card_html += f"""
 <div style='position: absolute; top: 0; left: 0; width: 100%; height: 100%;'>
     <img src='{get_renderable_image_src(card.get("image", ""))}' referrerpolicy='no-referrer' crossorigin='anonymous' style='width: 100%; height: 100%; object-fit: cover; opacity: 0.85;'>
@@ -462,10 +264,8 @@ def render_card(card, location_index, location_type, is_enemy=False):
 </div>
 """
     else:
-        # --- BACK OF CARD ---
         atk_val = card.get('atk', card.get('stat_modifier', {}).get('atk', '-'))
         def_val = card.get('def', card.get('stat_modifier', {}).get('def', '-'))
-
         card_html += f"""
 <div style='padding: 15px; height: 100%; display: flex; flex-direction: column;'>
     <h4 style='margin-top: 0; color: {border_color}; border-bottom: 1px solid #444; padding-bottom: 5px;'>{card['name']}</h4>
@@ -476,28 +276,20 @@ def render_card(card, location_index, location_type, is_enemy=False):
             ab = card['ability']
             card_html += f"<div style='background: #333; padding: 5px; border-radius: 5px; margin-bottom: 10px;'><b style='font-size: 12px;'>✨ {ab.get('name','Ability')}</b><br><span style='font-size: 11px;'>Trigger: {ab.get('trigger','')}</span></div>"
 
-        card_html += f"""
-<div style='display:flex;justify-content:space-between;font-weight:bold;font-size:18px;border-top:1px solid #444;padding-top:10px;'><span>⚔️ {atk_val}</span><span>🛡️ {def_val}</span></div>
-</div>
-"""
-
+        card_html += f"<div style='display:flex;justify-content:space-between;font-weight:bold;font-size:18px;border-top:1px solid #444;padding-top:10px;'><span>⚔️ {atk_val}</span><span>🛡️ {def_val}</span></div></div>"
+    
     card_html += "</div>"
     st.markdown(textwrap.dedent(card_html).strip(), unsafe_allow_html=True)
 
-    # --- Interactive buttons below the card ---
-    # 1) Hand: play card
     if not is_enemy and location_type == 'hand':
         if st.button("Play Card", key=f"play_{card_key}", type="primary", use_container_width=True):
-            play_card(location_index, is_player=True)
-            st.rerun()
+            play_card(location_index, is_player=True); st.rerun()
 
-    # 2) Player board: select / cancel attacker
     if not is_enemy and location_type == 'board':
         can_attack = (card.get('type') == 'Attack') and (card.get('id') not in st.session_state.attacks_used)
         if st.session_state.selected_attacker == card.get('id'):
             if st.button("❌ Cancel", key=f"cancel_atk_{card_key}", use_container_width=True):
-                st.session_state.selected_attacker = None
-                st.rerun()
+                st.session_state.selected_attacker = None; st.rerun()
         else:
             attack_label = "⚔️ Attack" if can_attack else ("⛔ Exhausted" if card.get('type') == 'Attack' else "(No Attack)")
             if st.button(attack_label, key=f"atk_{card_key}", use_container_width=True, disabled=not can_attack):
@@ -505,13 +297,11 @@ def render_card(card, location_index, location_type, is_enemy=False):
                 log_event(f"🟦 Selected attacker: {card['name']}. Choose a target.")
                 st.rerun()
 
-    # 3) Enemy board: target button appears only when an attacker is selected
     if is_enemy and location_type == 'eboard' and st.session_state.selected_attacker:
         attacker_idx = _find_player_board_index_by_id(st.session_state.selected_attacker)
         attacker_valid = attacker_idx is not None and attacker_idx < len(st.session_state.board) and st.session_state.board[attacker_idx].get('type') == 'Attack' and (st.session_state.board[attacker_idx].get('id') not in st.session_state.attacks_used)
         if st.button("🎯 Target", key=f"tgt_{card_key}", type="primary", use_container_width=True, disabled=not attacker_valid):
-            if attacker_valid:
-                resolve_attack(attacker_idx, location_index)
+            if attacker_valid: resolve_attack(attacker_idx, location_index)
             st.session_state.selected_attacker = None
             st.rerun()
 
@@ -527,99 +317,79 @@ if not st.session_state.game_active:
     theme_input = st.text_input("Theme (e.g., 'Steampunk Pirates vs Clockwork Navy'):")
     if st.button("Generate Scenario & Start", type="primary"):
         if theme_input:
-            with st.spinner("Writing lore and generating art (this takes a few seconds)..."):
+            with st.spinner("Calling Gemini API to write lore and generate stats (this takes a few seconds)..."):
                 setup_game(theme_input)
             st.rerun()
 
+elif st.session_state.game_over:
+    if st.session_state.winner == "Player": 
+        st.balloons(); st.success("# 🏆 VICTORY IS YOURS!")
+    else: 
+        st.snow(); st.error("# 💀 DEFEAT...")
+    
+    with st.expander("📖 Scenario Lore", expanded=True): st.write(st.session_state.lore)
+        
+    if st.button("Return to Main Menu", type="primary"):
+        for k in state_defaults: st.session_state[k] = state_defaults[k]
+        st.rerun()
+
 else:
-    # --- LORE & SCOREBOARD ---
-    with st.expander("📖 Scenario Lore", expanded=False):
-        st.write(st.session_state.lore)
+    with st.expander("📖 Scenario Lore", expanded=False): st.write(st.session_state.lore)
 
     st.write("---")
     col1, col2, col3, col4 = st.columns([2, 1, 1, 2])
     with col1:
-        if st.session_state.active_stage:
-            st.success(f"**🌍 Active Stage:** {st.session_state.active_stage['name']}")
-    with col2:
-        st.markdown(f"<h3 style='color:#ff4a4a; text-align:center;'>Enemy HP: {st.session_state.enemy_hp}</h3>", unsafe_allow_html=True)
-    with col3:
-        st.markdown(f"<h3 style='color:#4a8cff; text-align:center;'>Your HP: {st.session_state.player_hp}</h3>", unsafe_allow_html=True)
+        if st.session_state.active_stage: st.success(f"**🌍 Active Stage:** {st.session_state.active_stage['name']}")
+    with col2: st.markdown(f"<h3 style='color:#ff4a4a; text-align:center;'>Enemy HP: {st.session_state.enemy_hp}</h3>", unsafe_allow_html=True)
+    with col3: st.markdown(f"<h3 style='color:#4a8cff; text-align:center;'>Your HP: {st.session_state.player_hp}</h3>", unsafe_allow_html=True)
     with col4:
         if st.button("⏭️ End Turn", use_container_width=True, type="primary"):
-            end_turn()
-            st.rerun()
+            end_turn(); st.rerun()
 
-    # --- BATTLEFIELD ZONE ---
-    st.markdown("""
-        <div style='background: rgba(0,0,0,0.5); padding: 20px; border-radius: 15px; border: 1px solid #444; margin-bottom: 20px;'>
-    """, unsafe_allow_html=True)
+    st.markdown("<div style='background: rgba(0,0,0,0.5); padding: 20px; border-radius: 15px; border: 1px solid #444; margin-bottom: 20px;'>", unsafe_allow_html=True)
 
     col_main, col_log = st.columns([4, 1])
 
     with col_main:
-        # Enemy Board
         st.markdown("<h4 style='color:#ff4a4a; text-align:center;'>👿 Enemy Field</h4>", unsafe_allow_html=True)
         if st.session_state.enemy_board:
             eboard_cols = st.columns(max(len(st.session_state.enemy_board), 1))
             for i, card in enumerate(st.session_state.enemy_board):
-                with eboard_cols[i]:
-                    render_card(card, i, "eboard", is_enemy=True)
+                with eboard_cols[i]: render_card(card, i, "eboard", is_enemy=True)
         else:
             st.caption("Enemy field is empty.")
-
-            # Optional: allow attacking the enemy hero directly when their field is empty
             if st.session_state.selected_attacker:
                 attacker_idx = _find_player_board_index_by_id(st.session_state.selected_attacker)
-                attacker_valid = (
-                    attacker_idx is not None
-                    and attacker_idx < len(st.session_state.board)
-                    and st.session_state.board[attacker_idx].get('type') == 'Attack'
-                    and (st.session_state.board[attacker_idx].get('id') not in st.session_state.attacks_used)
-                )
+                attacker_valid = (attacker_idx is not None and attacker_idx < len(st.session_state.board) and st.session_state.board[attacker_idx].get('type') == 'Attack' and (st.session_state.board[attacker_idx].get('id') not in st.session_state.attacks_used))
                 if st.button("🎯 Target Enemy", key="tgt_enemy", type="primary", use_container_width=True, disabled=not attacker_valid):
-                    if attacker_valid:
-                        resolve_direct_attack(attacker_idx)
-                    st.session_state.selected_attacker = None
-                    st.rerun()
+                    if attacker_valid: resolve_direct_attack(attacker_idx)
+                    st.session_state.selected_attacker = None; st.rerun()
 
         st.markdown("<hr style='border-color: #555;'>", unsafe_allow_html=True)
 
-        # Player Board
         st.markdown("<h4 style='color:#4a8cff; text-align:center;'>🛡️ Your Field</h4>", unsafe_allow_html=True)
         if st.session_state.board:
             board_cols = st.columns(max(len(st.session_state.board), 1))
             for i, card in enumerate(st.session_state.board):
-                with board_cols[i]:
-                    render_card(card, i, "board", is_enemy=False)
+                with board_cols[i]: render_card(card, i, "board", is_enemy=False)
         else:
             st.caption("Your field is empty.")
 
-        # Small helper hint
-        if st.session_state.selected_attacker:
-            st.info("Attacker selected — click 🎯 Target on an enemy card.")
+        if st.session_state.selected_attacker: st.info("Attacker selected — click 🎯 Target on an enemy card.")
 
     with col_log:
         st.markdown("<b>📜 Battle Log</b>", unsafe_allow_html=True)
-        for log in st.session_state.battle_log:
-            st.markdown(
-                f"<div style='font-size:12px; margin-bottom:5px; padding:5px; background:rgba(255,255,255,0.05); border-radius:4px;'>{log}</div>",
-                unsafe_allow_html=True
-            )
+        for log in st.session_state.battle_log: st.markdown(f"<div style='font-size:12px; margin-bottom:5px; padding:5px; background:rgba(255,255,255,0.05); border-radius:4px;'>{log}</div>", unsafe_allow_html=True)
 
-    st.markdown("</div>", unsafe_allow_html=True)  # End Battlefield Zone
+    st.markdown("</div>", unsafe_allow_html=True) 
 
-    # --- HAND ZONE ---
     st.markdown("<h3 style='text-align:center;'>🖐️ Your Hand</h3>", unsafe_allow_html=True)
     if st.session_state.hand:
         hand_cols = st.columns(len(st.session_state.hand))
         for i, card in enumerate(st.session_state.hand):
-            with hand_cols[i]:
-                render_card(card, i, "hand", is_enemy=False)
+            with hand_cols[i]: render_card(card, i, "hand", is_enemy=False)
 
     st.write("---")
     if st.button("Surrender & Restart"):
-        st.session_state.game_active = False
-        st.session_state.selected_attacker = None
-        st.session_state.attacks_used = set()
+        for k in state_defaults: st.session_state[k] = state_defaults[k]
         st.rerun()
