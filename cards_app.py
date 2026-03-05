@@ -3,7 +3,6 @@ import random
 import json
 import re
 import urllib.parse
-import textwrap
 
 # --- Page Config ---
 st.set_page_config(page_title="AI Card Battler", layout="wide", initial_sidebar_state="collapsed")
@@ -16,6 +15,7 @@ st.markdown("""
   background-color: transparent;
   width: 100%;
   max-width: 240px;
+  min-height: 336px; /* Hard fallback if aspect-ratio fails */
   aspect-ratio: 2.5 / 3.5;
   perspective: 1000px;
   margin: 0 auto;
@@ -29,12 +29,13 @@ st.markdown("""
   text-align: center;
   transition: transform 0.6s ease-in-out, box-shadow 0.3s ease;
   transform-style: preserve-3d;
+  -webkit-transform-style: preserve-3d;
   cursor: pointer;
   border-radius: 12px;
 }
 
 /* Checkbox hack to trigger flip without Python backend */
-.flip-checkbox:checked ~ .flip-card-inner { transform: rotateY(180deg); }
+.flip-checkbox:checked ~ .flip-card-inner { transform: rotateY(180deg); -webkit-transform: rotateY(180deg); }
 
 /* Interaction & Selection States */
 .flip-card-inner:hover { transform: translateY(-4px) scale(1.02); }
@@ -47,6 +48,7 @@ st.markdown("""
   width: 100%;
   height: 100%;
   backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
   border-radius: 12px;
   overflow: hidden;
   background: linear-gradient(135deg, #1e1e24, #101014);
@@ -57,6 +59,7 @@ st.markdown("""
 
 .flip-card-back {
   transform: rotateY(180deg);
+  -webkit-transform: rotateY(180deg);
   background: rgba(15, 15, 20, 0.95);
   display: flex;
   flex-direction: column;
@@ -114,7 +117,6 @@ def check_win_condition():
         st.session_state.winner = "Enemy"
 
 def cleanup_dead_cards():
-    """Removes cards flagged for death/consumption after their animation finishes."""
     st.session_state.board = [c for c in st.session_state.board if not c.get('is_dead', False)]
     st.session_state.enemy_board = [c for c in st.session_state.enemy_board if not c.get('is_dead', False)]
     st.session_state.hand = [c for c in st.session_state.hand if not c.get('is_consumed', False)]
@@ -163,7 +165,6 @@ def call_llm_api(theme):
 def fetch_real_ai_image(prompt: str) -> str:
     safe_prompt = urllib.parse.quote(prompt.replace('"', '').replace("'", "") + ", fantasy trading card portrait")
     seed = random.randint(1, 100000)
-    # Replaced the broken markdown wrapper with a clean URL string
     return f"[https://image.pollinations.ai/prompt/](https://image.pollinations.ai/prompt/){safe_prompt}?width=256&height=384&nologo=true&n=1&seed={seed}"
 
 # --- Game Logic ---
@@ -234,7 +235,6 @@ def apply_buff(buff_id, target_id):
     target_card['atk'] = target_card.get('atk', 0) + atk_mod
     target_card['def'] = target_card.get('def', 0) + def_mod
     
-    # Flag buff for consume animation
     buff_card['is_consumed'] = True 
     log_event(f"✨ Applied {buff_card['name']} to {target_card['name']} (+{atk_mod} ATK, +{def_mod} DEF)!")
     st.session_state.animation_state = {'type': 'buff', 'target_id': target_card['id']}
@@ -267,7 +267,7 @@ def resolve_attack(attacker_id, target_id):
 
     if target['def'] <= 0:
         log_event(f"💀 {target['name']} was destroyed!")
-        target['is_dead'] = True # Flag for death animation
+        target['is_dead'] = True 
     
     check_win_condition()
 
@@ -337,61 +337,48 @@ def render_card(card, location_type, is_enemy=False):
     anim_state = st.session_state.get('animation_state', {})
     if anim_state.get('attacker_id') == card['id']: wrapper_classes.append("anim-attack")
     if anim_state.get('target_id') == card['id']: wrapper_classes.append("anim-damage")
-    
-    # Apply death/consume animation states
     if card.get('is_dead'): wrapper_classes.append("anim-death")
     if card.get('is_consumed'): wrapper_classes.append("anim-consume")
 
-    front_stats = ""
+    # Construct HTML as a flat string to avoid Markdown code block bugs
+    html = f"<div class='flip-card {' '.join(wrapper_classes)}'>"
+    html += "<label style='display:block; width:100%; height:100%; margin:0; cursor:pointer;'>"
+    html += "<input type='checkbox' class='flip-checkbox' style='display:none;'>"
+    html += "<div class='flip-card-inner'>"
+    
+    # FRONT
+    html += "<div class='flip-card-front'>"
+    fallback_img = "[https://placehold.co/256x384/1E1E24/FFF?text=Image+Blocked](https://placehold.co/256x384/1E1E24/FFF?text=Image+Blocked)"
+    html += f"<img src='{card.get('image', '')}' onerror=\"this.onerror=null;this.src='{fallback_img}';\" style='width:100%; height:100%; object-fit:cover; opacity:0.9;'>"
     if card.get('type') == 'Attack':
-        front_stats = f"""
-        <div style='position:absolute; bottom:35px; width:100%; display:flex; justify-content:space-between; padding:0 10px; font-weight:bold; font-size:16px; text-shadow:1px 1px 2px #000;'>
-            <span style='background:rgba(200,40,40,0.9); padding:2px 8px; border-radius:4px;'>⚔️ {card.get('atk', 0)}</span>
-            <span style='background:rgba(40,100,200,0.9); padding:2px 8px; border-radius:4px;'>🛡️ {card.get('def', 0)}</span>
-        </div>
-        """
-        
-    fallback_img = "[https://placehold.co/256x384/1E1E24/FFF?text=Image](https://placehold.co/256x384/1E1E24/FFF?text=Image)\\nBlocked"
-    img_tag = f"<img src='{card.get('image', '')}' onerror=\"this.onerror=null;this.src='{fallback_img}';\" style='width:100%; height:100%; object-fit:cover; opacity:0.9;'>"
+        html += "<div style='position:absolute; bottom:35px; width:100%; display:flex; justify-content:space-between; padding:0 10px; font-weight:bold; font-size:16px; text-shadow:1px 1px 2px #000;'>"
+        html += f"<span style='background:rgba(200,40,40,0.9); padding:2px 8px; border-radius:4px;'>⚔️ {card.get('atk', 0)}</span>"
+        html += f"<span style='background:rgba(40,100,200,0.9); padding:2px 8px; border-radius:4px;'>🛡️ {card.get('def', 0)}</span>"
+        html += "</div>"
+    html += "<div style='position:absolute; bottom:0; width:100%; background:rgba(0,0,0,0.85); padding:8px; border-top:1px solid #555;'>"
+    html += f"<h4 style='margin:0; font-size:14px;'>{card['name']}</h4>"
+    html += "</div></div>"
 
-    back_html = f"""
-    <div style='padding:15px; flex-grow:1; overflow-y:auto;'>
-        <h4 style='margin:0 0 5px 0; border-bottom:1px solid #555; padding-bottom:5px; font-size:16px;'>{card['name']}</h4>
-        <p style='margin:0 0 10px 0; font-size:11px; color:#aaa;'>[{card['type']} - {card.get('rarity')}]</p>
-        <p style='margin:0; font-size:12px; font-style:italic; color:#ddd;'>"{card.get('desc', 'No lore.')}"</p>
-    </div>
-    """
+    # BACK
+    html += "<div class='flip-card-back'>"
+    html += "<div style='padding:15px; flex-grow:1; overflow-y:auto;'>"
+    html += f"<h4 style='margin:0 0 5px 0; border-bottom:1px solid #555; padding-bottom:5px; font-size:16px;'>{card['name']}</h4>"
+    html += f"<p style='margin:0 0 10px 0; font-size:11px; color:#aaa;'>[{card['type']} - {card.get('rarity')}]</p>"
+    html += f"<p style='margin:0; font-size:12px; font-style:italic; color:#ddd;'>\"{card.get('desc', 'No lore.')}\"</p>"
+    html += "</div>"
     
     if 'ability' in card:
         ab = card['ability']
-        back_html += f"<div style='margin:0 10px 10px 10px; background:rgba(255,255,255,0.1); padding:8px; border-radius:6px; font-size:11px;'><b style='color:#ffeb3b;'>✨ {ab.get('name','Ability')}</b><br>{ab.get('desc','')}</div>"
+        html += f"<div style='margin:0 10px 10px 10px; background:rgba(255,255,255,0.1); padding:8px; border-radius:6px; font-size:11px;'><b style='color:#ffeb3b;'>✨ {ab.get('name','Ability')}</b><br>{ab.get('desc','')}</div>"
     
     if card.get('type') == 'Attack':
-        back_html += f"<div style='padding:10px; display:flex; justify-content:space-between; font-weight:bold; font-size:16px; border-top:1px solid #555; background:rgba(0,0,0,0.4);'><span>⚔️ {card.get('atk', 0)}</span><span>🛡️ {card.get('def', 0)}</span></div>"
+        html += f"<div style='padding:10px; display:flex; justify-content:space-between; font-weight:bold; font-size:16px; border-top:1px solid #555; background:rgba(0,0,0,0.4);'><span>⚔️ {card.get('atk', 0)}</span><span>🛡️ {card.get('def', 0)}</span></div>"
     elif card.get('type') == 'Buff':
         mods = card.get('stat_modifier', {})
-        back_html += f"<div style='padding:10px; font-weight:bold; font-size:14px; border-top:1px solid #555; background:rgba(0,0,0,0.4); text-align:center;'>Buff: +{mods.get('atk',0)} ATK / +{mods.get('def',0)} DEF</div>"
+        html += f"<div style='padding:10px; font-weight:bold; font-size:14px; border-top:1px solid #555; background:rgba(0,0,0,0.4); text-align:center;'>Buff: +{mods.get('atk',0)} ATK / +{mods.get('def',0)} DEF</div>"
 
-    card_html = f"""
-    <div class='flip-card {' '.join(wrapper_classes)}'>
-        <label style='display:block; width:100%; height:100%; margin:0; cursor:pointer;'>
-            <input type='checkbox' class='flip-checkbox' style='display:none;'>
-            <div class='flip-card-inner'>
-                <div class='flip-card-front'>
-                    {img_tag}
-                    {front_stats}
-                    <div style='position:absolute; bottom:0; width:100%; background:rgba(0,0,0,0.85); padding:8px; border-top:1px solid #555;'>
-                        <h4 style='margin:0; font-size:14px;'>{card['name']}</h4>
-                    </div>
-                </div>
-                <div class='flip-card-back'>
-                    {back_html}
-                </div>
-            </div>
-        </label>
-    </div>
-    """
-    st.markdown(textwrap.dedent(card_html).strip(), unsafe_allow_html=True)
+    html += "</div></div></label></div>"
+    st.markdown(html, unsafe_allow_html=True)
 
     # --- Interaction Buttons ---
     is_disabled = card.get('is_dead', False) or card.get('is_consumed', False)
@@ -456,7 +443,6 @@ elif st.session_state.game_over:
         st.rerun()
 
 else:
-    # Lore display injected back into active game
     with st.expander("📖 Scenario Lore", expanded=False): st.write(st.session_state.lore)
     st.write("---")
     
