@@ -5,9 +5,42 @@ import re
 import urllib.parse
 import textwrap
 import base64
+import os
 
 # --- Page Config ---
 st.set_page_config(page_title="AI Card Battler", layout="wide", initial_sidebar_state="collapsed")
+
+# --- Persistent Repository System ---
+DB_FILE = "card_database.json"
+
+def load_repository():
+    """Loads the saved card art database from the hard drive."""
+    if os.path.exists(DB_FILE):
+        try:
+            with open(DB_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+def save_to_repository(card_name, image_data):
+    """Saves a successfully generated AI image to the local database forever."""
+    db = load_repository()
+    db[card_name] = image_data
+    with open(DB_FILE, "w") as f:
+        json.dump(db, f)
+
+def sync_art_across_game(card_name, image_data):
+    """Instantly updates all copies of a card in the current game when painted."""
+    locations = [
+        st.session_state.deck, st.session_state.hand, st.session_state.board,
+        st.session_state.enemy_deck, st.session_state.enemy_hand, st.session_state.enemy_board
+    ]
+    for loc in locations:
+        for c in loc:
+            if c['name'] == card_name:
+                c['image'] = image_data
+                c['has_ai_art'] = True
 
 # --- Global CSS (Animations, Vertical Aspect Ratios, Rarity, 3D Flip) ---
 st.markdown("""
@@ -86,7 +119,7 @@ st.markdown("""
 # --- Initialize Session State ---
 state_defaults = {
     'game_active': False, 'game_over': False, 'winner': None,
-    'deck': [], 'hand': [], 'board': [],
+    'theme': "", 'deck': [], 'hand': [], 'board': [],
     'enemy_deck': [], 'enemy_hand': [], 'enemy_board': [],
     'player_hp': 30, 'enemy_hp': 30,
     'active_stage': None, 'lore': "",
@@ -163,57 +196,53 @@ def call_llm_api(theme):
         st.error(f"Failed to generate scenario from AI. Error: {e}")
         return None
 
-def fetch_ai_image(card_name: str, card_type: str, theme: str, api_key: str) -> str:
-    """Attempts Imagen 3 first, falls back to DiceBear if it fails."""
+def fetch_placeholder_image(card_name: str) -> str:
+    """Option 1: Rock-solid dynamic text placeholder. Prevents delays."""
+    safe_name = urllib.parse.quote(card_name.replace(" ", "\n"))
+    return f"[https://placehold.co/256x384/2b2b36/888888.png?text=](https://placehold.co/256x384/2b2b36/888888.png?text=){safe_name}"
+
+def fetch_ai_image(card_name: str, card_type: str, theme: str, api_key: str):
+    """Lazy Loader: Only called when the user clicks 'Paint Art' on a specific card."""
+    if not api_key: return None
+    
     if card_type == "Buff":
         prompt_text = f"A magical item, spell, or object called '{card_name}'. Theme: {theme}. Single object focus, fantasy trading card illustration, masterpiece, dark background."
-        fallback_style = "icons" 
     else:
         prompt_text = f"A character or creature called '{card_name}'. Theme: {theme}. Fantasy trading card portrait, masterpiece, highly detailed."
-        fallback_style = "adventurer" 
         
-    if api_key:
-        try:
-            from google import genai
-            from google.genai import types
-            client = genai.Client(api_key=api_key)
-            result = client.models.generate_images(
-                model='imagen-3.0-generate-002',
-                prompt=prompt_text,
-                config=types.GenerateImagesConfig(
-                    number_of_images=1,
-                    aspect_ratio="3:4",
-                    output_mime_type="image/jpeg"
-                )
+    try:
+        from google import genai
+        from google.genai import types
+        client = genai.Client(api_key=api_key)
+        result = client.models.generate_images(
+            model='imagen-3.0-generate-002',
+            prompt=prompt_text,
+            config=types.GenerateImagesConfig(
+                number_of_images=1,
+                aspect_ratio="3:4",
+                output_mime_type="image/jpeg"
             )
-            b64 = base64.b64encode(result.generated_images[0].image.image_bytes).decode('utf-8')
-            return f"data:image/jpeg;base64,{b64}"
-        except Exception:
-            # Silently pass to fallback if Imagen limits are hit
-            pass
-            
-    # Bulletproof Fallback: Thematic deterministic avatars
-    safe_name = urllib.parse.quote(card_name)
-    # Decodes to "[https://api.dicebear.com/9.x/](https://api.dicebear.com/9.x/)" so the chat UI doesn't see it!
-    db_base = base64.b64decode("aHR0cHM6Ly9hcGkuZGljZWJlYXIuY29tLzkueC8=").decode("utf-8")
-    return f"{db_base}{fallback_style}/png?seed={safe_name}&size=256"
+        )
+        b64 = base64.b64encode(result.generated_images[0].image.image_bytes).decode('utf-8')
+        return f"data:image/jpeg;base64,{b64}"
+    except Exception as e:
+        return None # Gracefully fail if rate limited
 
 # --- Game Logic ---
 def setup_game(theme):
-    api_key = st.secrets.get("GEMINI_API_KEY", "")
     scenario = call_llm_api(theme)
     if not scenario: return
 
+    st.session_state.theme = theme
     st.session_state.lore = scenario.get("lore", "War has broken out.")
     st.session_state.active_stage = scenario.get("stage")
+    
+    # Load the repository to see if we already painted these cards previously!
+    db = load_repository()
 
     def process_deck(cards, is_player):
-        for card in cards:
-            if 'image' not in card:
-                card['image'] = fetch_ai_image(card['name'], card.get('type', 'Attack'), theme, api_key)
-                
         deck = []
-        for i, card in enumerate(cards * 3):
+        for i, card in enumerate(cards * 3): 
             new_card = card.copy()
             new_card['id'] = f"{'p' if is_player else 'e'}_{i}_{random.randint(100,999)}"
             new_card['rarity'] = card.get('rarity', 'Common')
@@ -221,6 +250,15 @@ def setup_game(theme):
             new_card['ability_used'] = False
             new_card['is_dead'] = False
             new_card['is_consumed'] = False
+            
+            # THE REPOSITORY CHECK
+            if new_card['name'] in db:
+                new_card['image'] = db[new_card['name']]
+                new_card['has_ai_art'] = True
+            else:
+                new_card['image'] = fetch_placeholder_image(new_card['name'])
+                new_card['has_ai_art'] = False
+                
             deck.append(new_card)
         random.shuffle(deck)
         return deck
@@ -382,11 +420,7 @@ def render_card(card, location_type, is_enemy=False):
     html += "<div class='flip-card-inner'>"
     
     html += "<div class='flip-card-front'>"
-    
-    # Base64 Decodes to "[https://dummyimage.com/256x384/1E1E24/FFFFFF.png?text=No+Image](https://dummyimage.com/256x384/1E1E24/FFFFFF.png?text=No+Image)"
-    fallback_img = base64.b64decode("aHR0cHM6Ly9kdW1teWltYWdlLmNvbS8yNTZ4Mzg0LzFFMUUyNC9GRkZGRkYucG5nP3RleHQ9Tm8rSW1hZ2U=").decode("utf-8")
-    
-    html += f"<img src='{card.get('image', fallback_img)}' referrerpolicy='no-referrer' onerror=\"this.onerror=null;this.src='{fallback_img}';\" style='width:100%; height:100%; object-fit:cover; opacity:0.9; background-color: #2b2b36;'>"
+    html += f"<img src='{card.get('image', '')}' style='width:100%; height:100%; object-fit:cover; opacity:0.9; background-color: #2b2b36;'>"
     
     if card.get('type') == 'Attack':
         html += "<div style='position:absolute; bottom:35px; width:100%; display:flex; justify-content:space-between; padding:0 10px; font-weight:bold; font-size:16px; text-shadow:1px 1px 2px #000;'>"
@@ -458,6 +492,19 @@ def render_card(card, location_type, is_enemy=False):
                 resolve_attack(st.session_state.selected_attacker, card['id'])
                 st.session_state.selected_attacker = None; st.rerun()
 
+        # --- THE LAZY LOADER BUTTON ---
+        if not card.get('has_ai_art', False):
+            if st.button("🎨 Paint AI Art", key=f"paint_{card_key}", use_container_width=True):
+                api_key = st.secrets.get("GEMINI_API_KEY", "")
+                with st.spinner(f"Painting {card['name']}..."):
+                    new_img = fetch_ai_image(card['name'], card.get('type', 'Attack'), st.session_state.theme, api_key)
+                    if new_img:
+                        save_to_repository(card['name'], new_img)
+                        sync_art_across_game(card['name'], new_img)
+                        st.rerun()
+                    else:
+                        st.error("Rate limit hit! Wait 15 seconds and try again.")
+
 # --- Main UI Rendering ---
 if not st.session_state.game_active:
     st.title("🃏 AI Lore Battler")
@@ -465,7 +512,7 @@ if not st.session_state.game_active:
     theme_input = st.text_input("Theme (e.g., 'Old School RuneScape', 'Cyberpunk Pirates'):")
     if st.button("Generate Scenario & Start", type="primary"):
         if theme_input:
-            with st.spinner("Forging cards and generating AI artwork..."):
+            with st.spinner("Forging cards... Game starts instantly, paint art at your own pace!"):
                 setup_game(theme_input)
             st.rerun()
 
