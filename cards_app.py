@@ -134,7 +134,7 @@ def call_llm_api(theme):
           "rarity": "Rare",
           "atk": 5,
           "def": 4,
-          "desc": "A thematic lore sentence about this specific character.",
+          "desc": "A thematic lore sentence about this character.",
           "ability": {{"name": "Strike", "desc": "Deals 2 damage."}}
         }},
         {{
@@ -148,7 +148,7 @@ def call_llm_api(theme):
       "enemy_cards": [ ... same structure as player_cards ... ]
     }}
     
-    CRITICAL: You MUST generate exactly 6 Attack cards and 2 Buff cards per faction. Every single card MUST have a "desc" field with lore.
+    CRITICAL: Generate exactly 6 Attack cards and 2 Buff cards per faction. Every card MUST have a "desc" field.
     """
 
     try:
@@ -162,11 +162,10 @@ def call_llm_api(theme):
         st.error(f"Failed to generate scenario from AI. Error: {e}")
         return None
 
-def fetch_real_ai_image(prompt: str) -> str:
-    # Using quote_plus and the /p/ endpoint for maximum stability
-    safe_prompt = urllib.parse.quote_plus(prompt + ", fantasy trading card portrait, masterpiece")
-    seed = random.randint(1, 100000)
-    return f"[https://pollinations.ai/p/](https://pollinations.ai/p/){safe_prompt}?width=256&height=384&seed={seed}"
+def fetch_sprite_image(card_name: str) -> str:
+    # Option 2: 100% Reliable Pixel-Art Generation via DiceBear API
+    safe_name = urllib.parse.quote(card_name)
+    return f"[https://api.dicebear.com/8.x/pixel-art/svg?seed=](https://api.dicebear.com/8.x/pixel-art/svg?seed=){safe_name}"
 
 # --- Game Logic ---
 def setup_game(theme):
@@ -185,7 +184,8 @@ def setup_game(theme):
             card['ability_used'] = False
             card['is_dead'] = False
             card['is_consumed'] = False
-            card['image'] = fetch_real_ai_image(f"{card['name']}, {theme}")
+            # Generating unique pixel art for every named card!
+            card['image'] = fetch_sprite_image(card['name'])
             deck.append(card.copy())
         random.shuffle(deck)
         return deck
@@ -341,7 +341,7 @@ def render_card(card, location_type, is_enemy=False):
     if card.get('is_dead'): wrapper_classes.append("anim-death")
     if card.get('is_consumed'): wrapper_classes.append("anim-consume")
 
-    # FRONT
+    # FRONT HTML
     html = f"<div class='flip-card {' '.join(wrapper_classes)}'>"
     html += "<label style='display:block; width:100%; height:100%; margin:0; cursor:pointer;'>"
     html += "<input type='checkbox' class='flip-checkbox' style='display:none;'>"
@@ -349,8 +349,9 @@ def render_card(card, location_type, is_enemy=False):
     
     html += "<div class='flip-card-front'>"
     
-    fallback_img = "[https://placehold.co/256x384/1E1E24/FFF?text=Image+Blocked](https://placehold.co/256x384/1E1E24/FFF?text=Image+Blocked)"
-    html += f"<img src='{card.get('image', '')}' referrerpolicy='no-referrer' onerror=\"this.onerror=null;this.src='{fallback_img}';\" style='width:100%; height:100%; object-fit:cover; opacity:0.9;'>"
+    fallback_img = "[https://placehold.co/256x384/1E1E24/FFF?text=No+Image](https://placehold.co/256x384/1E1E24/FFF?text=No+Image)"
+    # Using object-fit: contain and a dark background so the transparent SVGs look amazing
+    html += f"<img src='{card.get('image', '')}' onerror=\"this.onerror=null;this.src='{fallback_img}';\" style='width:100%; height:100%; object-fit:contain; opacity:0.9; background-color: #2b2b36; padding-bottom: 30px;'>"
     
     if card.get('type') == 'Attack':
         html += "<div style='position:absolute; bottom:35px; width:100%; display:flex; justify-content:space-between; padding:0 10px; font-weight:bold; font-size:16px; text-shadow:1px 1px 2px #000;'>"
@@ -361,15 +362,11 @@ def render_card(card, location_type, is_enemy=False):
     html += f"<h4 style='margin:0; font-size:14px;'>{card['name']}</h4>"
     html += "</div></div>"
 
-    # BACK
+    # BACK HTML
     html += "<div class='flip-card-back'>"
     html += "<div style='padding:15px; flex-grow:1; overflow-y:auto;'>"
     html += f"<h4 style='margin:0 0 5px 0; border-bottom:1px solid #555; padding-bottom:5px; font-size:16px;'>{card['name']}</h4>"
-    html += f"<p style='margin:0 0 5px 0; font-size:11px; color:#aaa;'>[{card['type']} - {card.get('rarity')}]</p>"
-    
-    # The Debug Link (Fixed URL formatting)
-    html += f"<p style='margin:0 0 10px 0; font-size:10px;'><a href='{card.get('image')}' target='_blank' style='color:#4a8cff; text-decoration:none;'>[Test Image Link]</a></p>"
-    
+    html += f"<p style='margin:0 0 10px 0; font-size:11px; color:#aaa;'>[{card['type']} - {card.get('rarity')}]</p>"
     html += f"<p style='margin:0; font-size:12px; font-style:italic; color:#ddd;'>\"{card.get('desc', 'No lore.')}\"</p>"
     html += "</div>"
     
@@ -434,7 +431,7 @@ if not st.session_state.game_active:
     theme_input = st.text_input("Theme (e.g., 'Old School RuneScape', 'Cyberpunk Pirates'):")
     if st.button("Generate Scenario & Start", type="primary"):
         if theme_input:
-            with st.spinner("Forging cards and contacting Pollinations.ai for artwork..."):
+            with st.spinner("Forging cards and generating sprites..."):
                 setup_game(theme_input)
             st.rerun()
 
