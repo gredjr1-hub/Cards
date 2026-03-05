@@ -163,24 +163,43 @@ def call_llm_api(theme):
         st.error(f"Failed to generate scenario from AI. Error: {e}")
         return None
 
-def fetch_ai_image(card_name: str, card_type: str, theme: str) -> str:
-    # CRITICAL FIX: Decodes to the new, stable 2026 endpoint: "[https://gen.pollinations.ai/image/](https://gen.pollinations.ai/image/)"
-    api_url = base64.b64decode("aHR0cHM6Ly9nZW4ucG9sbGluYXRpb25zLmFpL2ltYWdlLw==").decode("utf-8")
-    
-    # Image Prompt Engineering based on card type
+def fetch_ai_image(card_name: str, card_type: str, theme: str, api_key: str) -> str:
+    """Uses Google's Imagen 3 to generate high-quality art, with a robust fallback."""
     if card_type == "Buff":
-        prompt_text = f"An object, item, or magical effect called '{card_name}', theme: {theme}, single object focus, highly detailed fantasy trading card art, centered, masterpiece"
+        prompt_text = f"A magical item, spell, or object called '{card_name}'. Theme: {theme}. Single object focus, fantasy trading card illustration, masterpiece, dark background."
+        fallback_style = "icons" # Generates a cool item icon if Imagen fails
     else:
-        prompt_text = f"A character or creature called '{card_name}', theme: {theme}, highly detailed fantasy trading card art, portrait, masterpiece"
+        prompt_text = f"A character or creature called '{card_name}'. Theme: {theme}. Fantasy trading card portrait, masterpiece, highly detailed."
+        fallback_style = "adventurer" # Generates an RPG character avatar if Imagen fails
         
-    safe_prompt = urllib.parse.quote(prompt_text)
-    seed = random.randint(1, 100000)
-    
-    # We append &model=flux to ensure the API never rejects the request
-    return f"{api_url}{safe_prompt}?width=256&height=384&seed={seed}&nologo=true&model=flux"
+    if api_key:
+        try:
+            from google import genai
+            from google.genai import types
+            client = genai.Client(api_key=api_key)
+            result = client.models.generate_images(
+                model='imagen-3.0-generate-002',
+                prompt=prompt_text,
+                config=types.GenerateImagesConfig(
+                    number_of_images=1,
+                    aspect_ratio="3:4",
+                    output_mime_type="image/jpeg"
+                )
+            )
+            # Encode the bytes securely into a Data URI so the browser loads it instantly
+            b64 = base64.b64encode(result.generated_images[0].image.image_bytes).decode('utf-8')
+            return f"data:image/jpeg;base64,{b64}"
+        except Exception as e:
+            # If Google blocks the prompt for safety reasons or rate limits, gracefully fall back
+            pass
+            
+    # Bulletproof Fallback: Thematic deterministic avatars
+    safe_name = urllib.parse.quote(card_name)
+    return f"[https://api.dicebear.com/9.x/](https://api.dicebear.com/9.x/){fallback_style}/png?seed={safe_name}&size=256"
 
 # --- Game Logic ---
 def setup_game(theme):
+    api_key = st.secrets.get("GEMINI_API_KEY", "")
     scenario = call_llm_api(theme)
     if not scenario: return
 
@@ -188,19 +207,26 @@ def setup_game(theme):
     st.session_state.active_stage = scenario.get("stage")
 
     def process_deck(cards, is_player):
+        # OPTIMIZATION: Generate the art for the unique cards ONLY ONCE (Reduces API calls from 64 to 16)
+        for card in cards:
+            if 'image' not in card:
+                card['image'] = fetch_ai_image(card['name'], card.get('type', 'Attack'), theme, api_key)
+                
+        # Now multiply the pre-painted cards into a playable deck
         deck = []
-        for i, card in enumerate(cards * 4): 
-            card['id'] = f"{'p' if is_player else 'e'}_{i}_{random.randint(100,999)}"
-            card['rarity'] = card.get('rarity', 'Common')
-            card['desc'] = card.get('desc', 'A combatant enters the fray.')
-            card['ability_used'] = False
-            card['is_dead'] = False
-            card['is_consumed'] = False
-            card['image'] = fetch_ai_image(card['name'], card['type'], theme)
-            deck.append(card.copy())
+        for i, card in enumerate(cards * 3): # 3 copies of 8 cards = 24 card deck
+            new_card = card.copy()
+            new_card['id'] = f"{'p' if is_player else 'e'}_{i}_{random.randint(100,999)}"
+            new_card['rarity'] = card.get('rarity', 'Common')
+            new_card['desc'] = card.get('desc', 'A combatant enters the fray.')
+            new_card['ability_used'] = False
+            new_card['is_dead'] = False
+            new_card['is_consumed'] = False
+            deck.append(new_card)
         random.shuffle(deck)
         return deck
 
+    # Paint the cards while showing a spinner
     st.session_state.deck = process_deck(scenario.get("player_cards", []), True)
     st.session_state.hand = [st.session_state.deck.pop() for _ in range(4)]
 
@@ -361,7 +387,6 @@ def render_card(card, location_type, is_enemy=False):
     
     fallback_img = base64.b64decode("aHR0cHM6Ly9kdW1teWltYWdlLmNvbS8yNTZ4Mzg0LzFFMUUyNC9GRkZGRkYucG5nP3RleHQ9Tm8rSW1hZ2U=").decode("utf-8")
     
-    # Restored object-fit: cover so true AI art fills the card frame properly
     html += f"<img src='{card.get('image', fallback_img)}' referrerpolicy='no-referrer' onerror=\"this.onerror=null;this.src='{fallback_img}';\" style='width:100%; height:100%; object-fit:cover; opacity:0.9; background-color: #2b2b36;'>"
     
     if card.get('type') == 'Attack':
@@ -441,7 +466,7 @@ if not st.session_state.game_active:
     theme_input = st.text_input("Theme (e.g., 'Old School RuneScape', 'Cyberpunk Pirates'):")
     if st.button("Generate Scenario & Start", type="primary"):
         if theme_input:
-            with st.spinner("Forging cards and generating AI artwork..."):
+            with st.spinner("Writing Lore and Painting 16 Unique Cards with Imagen 3 (this takes about 30 seconds)..."):
                 setup_game(theme_input)
             st.rerun()
 
