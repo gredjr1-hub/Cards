@@ -164,9 +164,8 @@ def call_llm_api(theme):
         return None
 
 def fetch_ai_image(card_name: str, card_type: str, theme: str) -> str:
-    # CRITICAL FIX: Base64 encodes "[https://image.pollinations.ai/prompt/](https://image.pollinations.ai/prompt/)"
-    # This hits the raw image generator, preventing the web-UI redirect
-    api_url = base64.b64decode("aHR0cHM6Ly9pbWFnZS5wb2xsaW5hdGlvbnMuYWkvcHJvbXB0Lw==").decode("utf-8")
+    # CRITICAL FIX: Decodes to the new, stable 2026 endpoint: "[https://gen.pollinations.ai/image/](https://gen.pollinations.ai/image/)"
+    api_url = base64.b64decode("aHR0cHM6Ly9nZW4ucG9sbGluYXRpb25zLmFpL2ltYWdlLw==").decode("utf-8")
     
     # Image Prompt Engineering based on card type
     if card_type == "Buff":
@@ -174,9 +173,11 @@ def fetch_ai_image(card_name: str, card_type: str, theme: str) -> str:
     else:
         prompt_text = f"A character or creature called '{card_name}', theme: {theme}, highly detailed fantasy trading card art, portrait, masterpiece"
         
-    safe_prompt = urllib.parse.quote_plus(prompt_text)
+    safe_prompt = urllib.parse.quote(prompt_text)
     seed = random.randint(1, 100000)
-    return f"{api_url}{safe_prompt}?width=256&height=384&seed={seed}&nologo=true"
+    
+    # We append &model=flux to ensure the API never rejects the request
+    return f"{api_url}{safe_prompt}?width=256&height=384&seed={seed}&nologo=true&model=flux"
 
 # --- Game Logic ---
 def setup_game(theme):
@@ -360,6 +361,7 @@ def render_card(card, location_type, is_enemy=False):
     
     fallback_img = base64.b64decode("aHR0cHM6Ly9kdW1teWltYWdlLmNvbS8yNTZ4Mzg0LzFFMUUyNC9GRkZGRkYucG5nP3RleHQ9Tm8rSW1hZ2U=").decode("utf-8")
     
+    # Restored object-fit: cover so true AI art fills the card frame properly
     html += f"<img src='{card.get('image', fallback_img)}' referrerpolicy='no-referrer' onerror=\"this.onerror=null;this.src='{fallback_img}';\" style='width:100%; height:100%; object-fit:cover; opacity:0.9; background-color: #2b2b36;'>"
     
     if card.get('type') == 'Attack':
