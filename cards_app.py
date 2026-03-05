@@ -349,7 +349,6 @@ def render_card(card, location_type, is_enemy=False):
     
     html += "<div class='flip-card-front'>"
     
-    # ADDED referrerpolicy='no-referrer' TO BYPASS BLOCKS
     fallback_img = "[https://placehold.co/256x384/1E1E24/FFF?text=Image+Blocked](https://placehold.co/256x384/1E1E24/FFF?text=Image+Blocked)"
     html += f"<img src='{card.get('image', '')}' referrerpolicy='no-referrer' onerror=\"this.onerror=null;this.src='{fallback_img}';\" style='width:100%; height:100%; object-fit:cover; opacity:0.9;'>"
     
@@ -368,7 +367,7 @@ def render_card(card, location_type, is_enemy=False):
     html += f"<h4 style='margin:0 0 5px 0; border-bottom:1px solid #555; padding-bottom:5px; font-size:16px;'>{card['name']}</h4>"
     html += f"<p style='margin:0 0 5px 0; font-size:11px; color:#aaa;'>[{card['type']} - {card.get('rarity')}]</p>"
     
-    # The Debug Link - Ultimate Troubleshooting Tool
+    # The Debug Link (Fixed URL formatting)
     html += f"<p style='margin:0 0 10px 0; font-size:10px;'><a href='{card.get('image')}' target='_blank' style='color:#4a8cff; text-decoration:none;'>[Test Image Link]</a></p>"
     
     html += f"<p style='margin:0; font-size:12px; font-style:italic; color:#ddd;'>\"{card.get('desc', 'No lore.')}\"</p>"
