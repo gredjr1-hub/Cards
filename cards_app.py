@@ -51,65 +51,181 @@ def log_event(message: str):
         st.session_state.battle_log.pop()
 
 # --- Real API Integration ---
+
+
+def _slug_words(s: str):
+    words = re.findall(r"[A-Za-z0-9]+", s)
+    return [w for w in words if w]
+
+
+def _generate_mock_scenario(theme: str) -> dict:
+    """Deterministic-ish but *theme-dependent* fallback when no real LLM is configured.
+
+    This prevents the app from showing the same lore/cards no matter what prompt is used.
+    """
+    words = _slug_words(theme) or ["Arcane", "Frontier"]
+    w1 = words[0].title()
+    w2 = (words[1] if len(words) > 1 else words[0]).title()
+
+    # Use a fresh RNG each time so reruns/new prompts change output even across app restarts.
+    # (We mix in system randomness instead of seeding only from theme.)
+    rng = random.Random()
+    rng.seed(random.SystemRandom().randint(1, 2**31 - 1))
+
+    pro_faction = rng.choice([
+        f"{w1} Wardens",
+        f"Order of {w1}",
+        f"{w1}-{w2} Vanguard",
+        f"{w1} Collective",
+    ])
+    ant_faction = rng.choice([
+        f"{w2} Syndicate",
+        f"{w2} Dominion",
+        f"The {w2} Cartel",
+        f"{w1} Reavers",
+    ])
+
+    mood = rng.choice(["neon", "ashen", "verdant", "stormlit", "clockwork", "void-touched"])
+    arena = rng.choice(["canopy", "harbor", "catacombs", "sky-rail", "ruined citadel", "salt flats"])
+
+    lore = (
+        f"In a {mood} {arena} shaped by the theme of **{theme}**, {pro_faction} hold the line against {ant_faction}. "
+        f"Every relic, rumor, and resource has become a weapon — and the battlefield itself remembers.
+
+"
+        f"As tensions flare, champions rise with strange new cards pulled from the same prompt that summoned this war. "
+        f"Victory isn't just damage dealt — it's control of the story." 
+    )
+
+    stage_effect = rng.choice(["acid_rain", "smog", "mana_surge", "sandstorm", "blackout", "gravity_flux"])
+    stage_name = rng.choice([
+        f"{mood.title()} {arena.title()}",
+        f"{w1} Rift",
+        f"The {w2} Verge",
+        f"{arena.title()} of {w1}",
+    ])
+    stage_desc = {
+        "acid_rain": "Corrosive rain falls. All cards lose 1 DEF at end of turn.",
+        "smog": "Choking smog rolls in. The first attack each turn deals -1 damage.",
+        "mana_surge": "Wild mana surges. Buffs last +1 turn.",
+        "sandstorm": "A sandstorm blinds combatants. Attacks have a 20% chance to miss.",
+        "blackout": "Systems flicker. Abilities trigger one turn later.",
+        "gravity_flux": "Gravity lurches. The highest ATK unit can't attack next turn.",
+    }[stage_effect]
+
+    def _rand_hex():
+        return f"#{rng.randint(0,255):02x}{rng.randint(0,255):02x}{rng.randint(0,255):02x}"
+
+    visuals = {
+        "css_gradient": f"linear-gradient(to bottom, {_rand_hex()}, {_rand_hex()})",
+        "weather_overlay": rng.choice(["rain", "fog", "sparks", "none"]),
+    }
+
+    nouns = ["Vanguard", "Stalker", "Sentinel", "Arcanist", "Corsair", "Scribe", "Warden", "Rider", "Shredder", "Drone"]
+    verbs = ["Sap", "Bolt", "Gloom", "Iron", "Star", "Rune", "Mist", "Flame", "Shade", "Pulse"]
+
+    def make_attack(name_prefix: str):
+        atk = rng.randint(2, 8)
+        df = rng.randint(2, 8)
+        return {
+            "name": f"{name_prefix} {rng.choice(nouns)}",
+            "type": "Attack",
+            "atk": atk,
+            "def": df,
+            "desc": rng.choice([
+                "A frontline defender forged for the decisive push.",
+                "Strikes fast, then vanishes into the board's shadows.",
+                "Built to punish greedy lines and sloppy positioning.",
+                "Turns momentum into damage with ruthless efficiency.",
+            ])
+        }
+
+    def make_buff(name_prefix: str):
+        a = rng.randint(1, 4)
+        d = rng.randint(0, 3)
+        dur = rng.randint(1, 3)
+        return {
+            "name": f"{name_prefix}-{rng.choice(['Surge','Ward','Bloom','Protocol','Charm'])}",
+            "type": "Buff",
+            "stat_modifier": {"atk": a, "def": d},
+            "duration_turns": dur,
+            "desc": rng.choice([
+                "Overcharges an ally's circuitry.",
+                "Hardens resolve — and armor.",
+                "A burst of advantage at exactly the right time.",
+                "Temporarily rewrites the rules of engagement.",
+            ])
+        }
+
+    # Build 8 cards each side (6 attack, 2 buff)
+    player_cards = []
+    enemy_cards = []
+    for _ in range(6):
+        player_cards.append(make_attack(rng.choice(verbs) + "-" + w1))
+        enemy_cards.append(make_attack(rng.choice(verbs) + "-" + w2))
+    for _ in range(2):
+        player_cards.append(make_buff(w1))
+        enemy_cards.append(make_buff(w2))
+
+    rng.shuffle(player_cards)
+    rng.shuffle(enemy_cards)
+
+    return {
+        "lore": lore,
+        "stage": {
+            "name": stage_name,
+            "type": "Stage",
+            "stage_effect": stage_effect,
+            "desc": stage_desc,
+            "visuals": visuals,
+        },
+        "player_cards": player_cards,
+        "enemy_cards": enemy_cards,
+    }
+
+
 def call_llm_api(theme):
+    """Return scenario JSON.
+
+    - If GEMINI_API_KEY is configured and google-genai is available, use Gemini.
+    - Otherwise fall back to a theme-dependent procedural generator.
+    """
     api_key = st.secrets.get("GEMINI_API_KEY", "")
-    """
-    To use real AI: 
-    1. pip install google-genai (or openai)
-    2. Uncomment the API code below and add your key.
-    """
 
     system_prompt = f"""
-    Create a card game scenario based on the theme: '{theme}'.
-    Return ONLY a JSON object with this exact structure:
-    {{
-      "lore": "Two paragraphs describing the conflict, the setting, and the two opposing factions.",
-      "stage": {{"name": "Stage Name", "type": "Stage", "stage_effect": "acid_rain", "desc": "effect desc", "visuals": {{"css_gradient": "linear-gradient(...)", "weather_overlay": "rain"}}}},
-      "player_cards": [ Generate 8 cards (Attack and Buff) for the protagonist faction ],
-      "enemy_cards": [ Generate 8 cards (Attack and Buff) for the antagonist faction ]
-    }}
-    Attack cards need 'atk', 'def', and optionally an 'ability' object. 
-    Buff cards need 'stat_modifier' and 'duration_turns'.
-    """
+Create a card game scenario based on the theme: '{theme}'.
+Return ONLY a JSON object with this exact structure:
+{{
+  "lore": "Two paragraphs describing the conflict, the setting, and the two opposing factions.",
+  "stage": {{"name": "Stage Name", "type": "Stage", "stage_effect": "acid_rain", "desc": "effect desc", "visuals": {{"css_gradient": "linear-gradient(...)", "weather_overlay": "rain"}}}},
+  "player_cards": [Generate 8 cards (Attack and Buff) for the protagonist faction],
+  "enemy_cards": [Generate 8 cards (Attack and Buff) for the antagonist faction]
+}}
+Attack cards need 'atk', 'def', and optionally an 'ability' object.
+Buff cards need 'stat_modifier' and 'duration_turns'.
+"""
 
-    try:
-        # ==========================================
-        # REAL API CALL GOES HERE:
-        # from google import genai
-        # client = genai.Client(api_key=api_key)
-        # response = client.models.generate_content(model='gemini-2.5-pro', contents=system_prompt)
-        # raw_response_text = response.text
-        # ==========================================
+    # Try real API only if the user configured it.
+    if api_key:
+        try:
+            from google import genai  # type: ignore
+            client = genai.Client(api_key=api_key)
+            response = client.models.generate_content(model='gemini-2.5-pro', contents=system_prompt)
+            raw_response_text = getattr(response, 'text', None) or str(response)
 
-        # MOCK FALLBACK (If API isn't active)
-        raw_response_text = """```json
-        {
-            "lore": "The Neon Syndicate has finally breached the upper canopy of the Cyber-Jungle. For decades, the Bio-Druids maintained peace, weaving technology into the very roots of the ancient trees. Now, corporate greed seeks to harvest the sap-batteries that power the ecosystem. The war for the canopy begins.",
-            "stage": {
-                "name": "Smog Canopy", "type": "Stage", "stage_effect": "smog", 
-                "desc": "Thick pollution chokes the battlefield. All cards lose 1 DEF per turn.",
-                "visuals": {"css_gradient": "linear-gradient(to bottom, #1a2a22, #4a5a42)", "weather_overlay": "rain"}
-            },
-            "player_cards": [
-                {"name": "Bio-Druid Vanguard", "type": "Attack", "atk": 4, "def": 6, "desc": "A frontline defender made of bark and steel."},
-                {"name": "Sap-Surge", "type": "Buff", "stat_modifier": {"atk": 3, "def": 1}, "duration_turns": 2, "desc": "Overcharges the circuitry of an ally."}
-            ],
-            "enemy_cards": [
-                {"name": "Syndicate Shredder", "type": "Attack", "atk": 7, "def": 2, "ability": {"name": "Chain-Blade", "trigger": "Active", "effect_type": "status", "status": "bleed", "duration_turns": 2}, "desc": "Glass cannon built to clear the forest."},
-                {"name": "EMP Drone", "type": "Attack", "atk": 2, "def": 3, "desc": "Disrupts bio-mechanical signals."}
-            ]
-        }
-        ```"""
+            cleaned_text = re.sub(r'```json
+|
+```|```', '', raw_response_text).strip()
+            return json.loads(cleaned_text)
+        except Exception as e:
+            st.warning(f"LLM call failed; using mock scenario instead. Details: {e}")
 
-        cleaned_text = re.sub(r'```json\n|\n```|```', '', raw_response_text).strip()
-        scenario_data = json.loads(cleaned_text)
-        return scenario_data
+    # Fallback: varied, theme-dependent mock
+    return _generate_mock_scenario(theme)
 
-    except Exception as e:
-        st.error(f"API Error: {e}")
-        return None
 
 def fetch_real_ai_image(prompt: str) -> str:
+
     """
     Uses Pollinations.ai for instant, free, keyless AI image generation.
     Generates a 256x384 portrait image perfect for trading cards.
