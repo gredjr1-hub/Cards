@@ -3,6 +3,7 @@ import random
 import json
 import re
 import urllib.parse
+import textwrap
 
 # --- Page Config ---
 st.set_page_config(page_title="AI Card Battler", layout="wide", initial_sidebar_state="collapsed")
@@ -252,6 +253,7 @@ def execute_enemy_turn():
     st.session_state.turn_count += 1
     log_event("--- Your Turn ---")
     # Reset player attack exhaustion at the start of the player's turn
+    st.session_state.attacks_used = set()
 
 def end_turn():
     # Clear any pending attack selection at end of turn
@@ -286,55 +288,57 @@ def render_card(card, location_index, location_type, is_enemy=False):
     extra_class += " targetable" if is_targetable_enemy else ""
 
     # CSS for the physical card look
+    # IMPORTANT: Streamlit markdown treats lines indented by 4+ spaces as a code block.
+    # Dedent HTML before rendering so you don't see literal <div> text.
     card_html = f"""
-    <div class='card-shell{extra_class}' style='
-        background-color: #1e1e1e;
-        border: 3px solid {border_color};
-        border-radius: 12px;
-        box-shadow: {target_glow if (is_targetable_enemy and not is_selected_attacker) else highlight};
-        height: 320px;
-        overflow: hidden;
-        position: relative;
-        color: white;
-        font-family: sans-serif;
-    '>
-    """
+<div class='card-shell{extra_class}' style='
+    background-color: #1e1e1e;
+    border: 3px solid {border_color};
+    border-radius: 12px;
+    box-shadow: {target_glow if (is_targetable_enemy and not is_selected_attacker) else highlight};
+    height: 320px;
+    overflow: hidden;
+    position: relative;
+    color: white;
+    font-family: sans-serif;
+'>
+"""
 
     if not card.get('is_flipped', False):
         # --- FRONT OF CARD ---
         card_html += f"""
-        <div style='position: absolute; top: 0; left: 0; width: 100%; height: 100%;'>
-            <img src='{card.get("image", "")}' style='width: 100%; height: 100%; object-fit: cover; opacity: 0.85;'>
-        </div>
-        <div style='position: absolute; bottom: 0; left: 0; width: 100%; background: rgba(0,0,0,0.82); padding: 8px; border-top: 1px solid {border_color};'>
-            <h4 style='margin: 0; font-size: 16px; text-align: center;'>{card['name']}</h4>
-        </div>
-        """
+<div style='position: absolute; top: 0; left: 0; width: 100%; height: 100%;'>
+    <img src='{card.get("image", "")}' style='width: 100%; height: 100%; object-fit: cover; opacity: 0.85;'>
+</div>
+<div style='position: absolute; bottom: 0; left: 0; width: 100%; background: rgba(0,0,0,0.82); padding: 8px; border-top: 1px solid {border_color};'>
+    <h4 style='margin: 0; font-size: 16px; text-align: center;'>{card['name']}</h4>
+</div>
+"""
     else:
         # --- BACK OF CARD ---
         atk_val = card.get('atk', card.get('stat_modifier', {}).get('atk', '-'))
         def_val = card.get('def', card.get('stat_modifier', {}).get('def', '-'))
 
         card_html += f"""
-        <div style='padding: 15px; height: 100%; display: flex; flex-direction: column;'>
-            <h4 style='margin-top: 0; color: {border_color}; border-bottom: 1px solid #444; padding-bottom: 5px;'>{card['name']}</h4>
-            <p style='font-size: 12px; color: #aaa; margin-bottom: 10px;'>[{card['type']}]</p>
-            <p style='font-size: 14px; flex-grow: 1; overflow-y: auto;'><i>"{card.get('desc', '')}"</i></p>
-        """
+<div style='padding: 15px; height: 100%; display: flex; flex-direction: column;'>
+    <h4 style='margin-top: 0; color: {border_color}; border-bottom: 1px solid #444; padding-bottom: 5px;'>{card['name']}</h4>
+    <p style='font-size: 12px; color: #aaa; margin-bottom: 10px;'>[{card['type']}]</p>
+    <p style='font-size: 14px; flex-grow: 1; overflow-y: auto;'><i>"{card.get('desc', '')}"</i></p>
+"""
         if 'ability' in card:
             ab = card['ability']
             card_html += f"<div style='background: #333; padding: 5px; border-radius: 5px; margin-bottom: 10px;'><b style='font-size: 12px;'>✨ {ab.get('name','Ability')}</b><br><span style='font-size: 11px;'>Trigger: {ab.get('trigger','')}</span></div>"
 
         card_html += f"""
-            <div style='display: flex; justify-content: space-between; font-weight: bold; font-size: 18px; border-top: 1px solid #444; padding-top: 10px;'>
-                <span>⚔️ {atk_val}</span>
-                <span>🛡️ {def_val}</span>
-            </div>
-        </div>
-        """
+    <div style='display: flex; justify-content: space-between; font-weight: bold; font-size: 18px; border-top: 1px solid #444; padding-top: 10px;'>
+        <span>⚔️ {atk_val}</span>
+        <span>🛡️ {def_val}</span>
+    </div>
+</div>
+"""
 
     card_html += "</div>"
-    st.markdown(card_html, unsafe_allow_html=True)
+    st.markdown(textwrap.dedent(card_html).strip(), unsafe_allow_html=True)
 
     # --- Interactive buttons below the card ---
     # 1) Hand: play card
