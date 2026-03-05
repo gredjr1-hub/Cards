@@ -76,11 +76,9 @@ def call_llm_api(theme):
     try:
         from google import genai
         client = genai.Client(api_key=api_key)
-        # Using gemini-2.5-pro for complex JSON structuring
         response = client.models.generate_content(model='gemini-2.5-pro', contents=system_prompt)
         raw_text = getattr(response, 'text', None) or str(response)
         
-        # Clean markdown formatting if the AI disobeys
         cleaned_text = re.sub(r'```json\n|\n```|```', '', raw_text).strip()
         return json.loads(cleaned_text)
         
@@ -97,13 +95,18 @@ def fetch_real_ai_image(prompt: str) -> str:
 def _image_url_to_data_uri(url: str):
     if not url or requests is None: return None
     try:
-        r = requests.get(url, timeout=15)
+        # FIX 1: Pretend to be a real web browser to bypass anti-bot blocks
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
+        r = requests.get(url, headers=headers, timeout=15)
         r.raise_for_status()
         content_type = r.headers.get('content-type', '').split(';')[0].strip().lower()
         if not content_type.startswith('image/'): return None
         b64 = base64.b64encode(r.content).decode('ascii')
         return f"data:{content_type};base64,{b64}"
-    except Exception:
+    except Exception as e:
+        print(f"Failed to fetch image: {e}")
         return None
 
 def get_renderable_image_src(url: str) -> str:
@@ -118,7 +121,6 @@ def setup_game(theme):
     st.session_state.active_stage = scenario.get("stage")
 
     p_deck = []
-    # Create a 32 card deck from the 8 generated cards
     for i, card in enumerate(scenario.get("player_cards", []) * 4):
         card['id'] = f"p_{i}"
         card['is_flipped'] = False
@@ -255,9 +257,10 @@ def render_card(card, location_index, location_type, is_enemy=False):
 '>
 """
     if not card.get('is_flipped', False):
+        # FIX 2: Removed referrerpolicy and crossorigin from the img tag
         card_html += f"""
 <div style='position: absolute; top: 0; left: 0; width: 100%; height: 100%;'>
-    <img src='{get_renderable_image_src(card.get("image", ""))}' referrerpolicy='no-referrer' crossorigin='anonymous' style='width: 100%; height: 100%; object-fit: cover; opacity: 0.85;'>
+    <img src='{get_renderable_image_src(card.get("image", ""))}' style='width: 100%; height: 100%; object-fit: cover; opacity: 0.85;'>
 </div>
 <div style='position: absolute; bottom: 0; left: 0; width: 100%; background: rgba(0,0,0,0.82); padding: 8px; border-top: 1px solid {border_color};'>
     <h4 style='margin: 0; font-size: 16px; text-align: center;'>{card['name']}</h4>
