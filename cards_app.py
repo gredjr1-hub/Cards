@@ -7,6 +7,19 @@ import urllib.parse
 # --- Page Config ---
 st.set_page_config(page_title="AI Card Battler", layout="wide", initial_sidebar_state="collapsed")
 
+
+# --- Global CSS (board feel + hover/target cues) ---
+st.markdown("""
+<style>
+/* Card interaction CSS */
+.card-shell { transition: transform 120ms ease, box-shadow 120ms ease, filter 120ms ease; }
+.card-shell:hover { transform: translateY(-2px) scale(1.01); filter: brightness(1.03); }
+.card-shell.targetable { cursor: crosshair; }
+.card-shell.selected { transform: translateY(-3px) scale(1.02); }
+</style>
+""", unsafe_allow_html=True)
+
+
 # --- Initialize Session State ---
 if 'game_active' not in st.session_state: st.session_state.game_active = False
 if 'deck' not in st.session_state: st.session_state.deck = []
@@ -23,6 +36,8 @@ if 'turn_count' not in st.session_state: st.session_state.turn_count = 1
 if 'battle_log' not in st.session_state: st.session_state.battle_log = []
 # NEW: interactive targeting state
 if 'selected_attacker' not in st.session_state: st.session_state.selected_attacker = None  # stores attacker card id (player board)
+# NEW: per-turn attack exhaustion tracking
+if 'attacks_used' not in st.session_state: st.session_state.attacks_used = set()  # card ids that already attacked this turn
 
 def log_event(message: str):
     st.session_state.battle_log.insert(0, message)
@@ -181,9 +196,36 @@ def resolve_attack(attacker_idx: int, target_idx: int):
     target['def'] = int(target.get('def', 0)) - atk
     log_event(f"🎯 {attacker['name']} hit {target['name']} for {atk} DMG!")
 
+    # Mark attacker as exhausted for this turn
+    st.session_state.attacks_used.add(attacker.get('id'))
+
     if target['def'] <= 0:
         log_event(f"💀 {target['name']} was destroyed!")
         st.session_state.enemy_board.pop(target_idx)
+
+
+def resolve_direct_attack(attacker_idx: int):
+    """Attack the enemy hero directly (only when enemy board is empty)."""
+    if attacker_idx is None:
+        return
+    if attacker_idx < 0 or attacker_idx >= len(st.session_state.board):
+        return
+    if st.session_state.enemy_board:
+        return
+
+    attacker = st.session_state.board[attacker_idx]
+    if attacker.get('type') != 'Attack':
+        log_event(f"⚠️ {attacker['name']} cannot attack (not an Attack card).")
+        return
+
+    atk = int(attacker.get('atk', 0))
+    st.session_state.enemy_hp -= atk
+    st.session_state.attacks_used.add(attacker.get('id'))
+    log_event(f"💥 {attacker['name']} hit the enemy for {atk} DMG!")
+    if st.session_state.enemy_hp <= 0:
+        st.session_state.enemy_hp = 0
+        log_event("🏆 You win!")
+
 
 def execute_enemy_turn():
     log_event("--- Enemy Turn ---")
@@ -209,6 +251,7 @@ def execute_enemy_turn():
 
     st.session_state.turn_count += 1
     log_event("--- Your Turn ---")
+    # Reset player attack exhaustion at the start of the player's turn
 
 def end_turn():
     # Clear any pending attack selection at end of turn
@@ -235,13 +278,20 @@ def render_card(card, location_index, location_type, is_enemy=False):
     border_color = "#ff4a4a" if is_enemy else "#4a8cff"
     highlight = "0 0 0 4px rgba(74,140,255,0.35), 0 0 18px rgba(74,140,255,0.45)" if is_selected_attacker else "0 4px 8px rgba(0,0,0,0.6)"
 
+    # Targeting cues (when an attacker is selected, enemy cards become targetable)
+    is_targetable_enemy = (is_enemy and location_type == 'eboard' and st.session_state.selected_attacker is not None)
+    target_glow = "0 0 0 4px rgba(255,205,0,0.35), 0 0 18px rgba(255,205,0,0.35)" if is_targetable_enemy else ""
+
+    extra_class = " selected" if is_selected_attacker else ""
+    extra_class += " targetable" if is_targetable_enemy else ""
+
     # CSS for the physical card look
     card_html = f"""
-    <div style='
+    <div class='card-shell{extra_class}' style='
         background-color: #1e1e1e;
         border: 3px solid {border_color};
         border-radius: 12px;
-        box-shadow: {highlight};
+        box-shadow: {target_glow if (is_targetable_enemy and not is_selected_attacker) else highlight};
         height: 320px;
         overflow: hidden;
         position: relative;
@@ -295,13 +345,14 @@ def render_card(card, location_index, location_type, is_enemy=False):
 
     # 2) Player board: select / cancel attacker
     if not is_enemy and location_type == 'board':
-        can_attack = (card.get('type') == 'Attack')
+        can_attack = (card.get('type') == 'Attack') and (card.get('id') not in st.session_state.attacks_used)
         if st.session_state.selected_attacker == card.get('id'):
             if st.button("❌ Cancel", key=f"cancel_atk_{card_key}", use_container_width=True):
                 st.session_state.selected_attacker = None
                 st.rerun()
         else:
-            if st.button("⚔️ Attack" if can_attack else "(No Attack)", key=f"atk_{card_key}", use_container_width=True, disabled=not can_attack):
+            attack_label = "⚔️ Attack" if can_attack else ("⛔ Exhausted" if card.get('type') == 'Attack' else "(No Attack)")
+            if st.button(attack_label, key=f"atk_{card_key}", use_container_width=True, disabled=not can_attack):
                 st.session_state.selected_attacker = card.get('id')
                 log_event(f"🟦 Selected attacker: {card['name']}. Choose a target.")
                 st.rerun()
@@ -309,7 +360,7 @@ def render_card(card, location_index, location_type, is_enemy=False):
     # 3) Enemy board: target button appears only when an attacker is selected
     if is_enemy and location_type == 'eboard' and st.session_state.selected_attacker:
         attacker_idx = _find_player_board_index_by_id(st.session_state.selected_attacker)
-        attacker_valid = attacker_idx is not None and attacker_idx < len(st.session_state.board) and st.session_state.board[attacker_idx].get('type') == 'Attack'
+        attacker_valid = attacker_idx is not None and attacker_idx < len(st.session_state.board) and st.session_state.board[attacker_idx].get('type') == 'Attack' and (st.session_state.board[attacker_idx].get('id') not in st.session_state.attacks_used)
         if st.button("🎯 Target", key=f"tgt_{card_key}", type="primary", use_container_width=True, disabled=not attacker_valid):
             if attacker_valid:
                 resolve_attack(attacker_idx, location_index)
@@ -369,6 +420,21 @@ else:
         else:
             st.caption("Enemy field is empty.")
 
+            # Optional: allow attacking the enemy hero directly when their field is empty
+            if st.session_state.selected_attacker:
+                attacker_idx = _find_player_board_index_by_id(st.session_state.selected_attacker)
+                attacker_valid = (
+                    attacker_idx is not None
+                    and attacker_idx < len(st.session_state.board)
+                    and st.session_state.board[attacker_idx].get('type') == 'Attack'
+                    and (st.session_state.board[attacker_idx].get('id') not in st.session_state.attacks_used)
+                )
+                if st.button("🎯 Target Enemy", key="tgt_enemy", type="primary", use_container_width=True, disabled=not attacker_valid):
+                    if attacker_valid:
+                        resolve_direct_attack(attacker_idx)
+                    st.session_state.selected_attacker = None
+                    st.rerun()
+
         st.markdown("<hr style='border-color: #555;'>", unsafe_allow_html=True)
 
         # Player Board
@@ -407,4 +473,5 @@ else:
     if st.button("Surrender & Restart"):
         st.session_state.game_active = False
         st.session_state.selected_attacker = None
+        st.session_state.attacks_used = set()
         st.rerun()
