@@ -134,7 +134,7 @@ def call_llm_api(theme):
           "rarity": "Rare",
           "atk": 5,
           "def": 4,
-          "desc": "A thematic lore sentence about this character.",
+          "desc": "A thematic lore sentence about this specific character.",
           "ability": {{"name": "Strike", "desc": "Deals 2 damage."}}
         }},
         {{
@@ -163,9 +163,9 @@ def call_llm_api(theme):
         return None
 
 def fetch_sprite_image(card_name: str) -> str:
-    # Option 2: 100% Reliable Pixel-Art Generation via DiceBear API
     safe_name = urllib.parse.quote(card_name)
-    return f"[https://api.dicebear.com/8.x/pixel-art/svg?seed=](https://api.dicebear.com/8.x/pixel-art/svg?seed=){safe_name}"
+    # CRITICAL FIX: Requesting .png instead of .svg avoids Streamlit HTML sanitization blocks
+    return f"[https://api.dicebear.com/8.x/pixel-art/png?seed=](https://api.dicebear.com/8.x/pixel-art/png?seed=){safe_name}&size=256"
 
 # --- Game Logic ---
 def setup_game(theme):
@@ -184,7 +184,6 @@ def setup_game(theme):
             card['ability_used'] = False
             card['is_dead'] = False
             card['is_consumed'] = False
-            # Generating unique pixel art for every named card!
             card['image'] = fetch_sprite_image(card['name'])
             deck.append(card.copy())
         random.shuffle(deck)
@@ -341,7 +340,6 @@ def render_card(card, location_type, is_enemy=False):
     if card.get('is_dead'): wrapper_classes.append("anim-death")
     if card.get('is_consumed'): wrapper_classes.append("anim-consume")
 
-    # FRONT HTML
     html = f"<div class='flip-card {' '.join(wrapper_classes)}'>"
     html += "<label style='display:block; width:100%; height:100%; margin:0; cursor:pointer;'>"
     html += "<input type='checkbox' class='flip-checkbox' style='display:none;'>"
@@ -349,8 +347,8 @@ def render_card(card, location_type, is_enemy=False):
     
     html += "<div class='flip-card-front'>"
     
-    fallback_img = "[https://placehold.co/256x384/1E1E24/FFF?text=No+Image](https://placehold.co/256x384/1E1E24/FFF?text=No+Image)"
-    # Using object-fit: contain and a dark background so the transparent SVGs look amazing
+    # Updated fallback to a safe PNG service
+    fallback_img = "[https://dummyimage.com/256x384/1E1E24/FFFFFF.png&text=No+Image](https://dummyimage.com/256x384/1E1E24/FFFFFF.png&text=No+Image)"
     html += f"<img src='{card.get('image', '')}' onerror=\"this.onerror=null;this.src='{fallback_img}';\" style='width:100%; height:100%; object-fit:contain; opacity:0.9; background-color: #2b2b36; padding-bottom: 30px;'>"
     
     if card.get('type') == 'Attack':
@@ -362,7 +360,6 @@ def render_card(card, location_type, is_enemy=False):
     html += f"<h4 style='margin:0; font-size:14px;'>{card['name']}</h4>"
     html += "</div></div>"
 
-    # BACK HTML
     html += "<div class='flip-card-back'>"
     html += "<div style='padding:15px; flex-grow:1; overflow-y:auto;'>"
     html += f"<h4 style='margin:0 0 5px 0; border-bottom:1px solid #555; padding-bottom:5px; font-size:16px;'>{card['name']}</h4>"
