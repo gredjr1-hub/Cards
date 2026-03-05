@@ -3,6 +3,7 @@ import random
 import json
 import re
 import urllib.parse
+import textwrap
 
 # --- Page Config ---
 st.set_page_config(page_title="AI Card Battler", layout="wide", initial_sidebar_state="collapsed")
@@ -10,18 +11,16 @@ st.set_page_config(page_title="AI Card Battler", layout="wide", initial_sidebar_
 # --- Global CSS (Animations, Vertical Aspect Ratios, Rarity, 3D Flip) ---
 st.markdown("""
 <style>
-/* 3D Flip Card Container */
 .flip-card {
   background-color: transparent;
   width: 100%;
   max-width: 240px;
-  min-height: 336px; /* Hard fallback if aspect-ratio fails */
+  min-height: 336px; 
   aspect-ratio: 2.5 / 3.5;
   perspective: 1000px;
   margin: 0 auto;
 }
 
-/* The element that actually flips */
 .flip-card-inner {
   position: relative;
   width: 100%;
@@ -34,15 +33,11 @@ st.markdown("""
   border-radius: 12px;
 }
 
-/* Checkbox hack to trigger flip without Python backend */
 .flip-checkbox:checked ~ .flip-card-inner { transform: rotateY(180deg); -webkit-transform: rotateY(180deg); }
-
-/* Interaction & Selection States */
 .flip-card-inner:hover { transform: translateY(-4px) scale(1.02); }
 .flip-checkbox:checked ~ .flip-card-inner:hover { transform: rotateY(180deg) translateY(-4px) scale(1.02); }
 .is-selected .flip-card-inner { transform: translateY(-10px) scale(1.03); z-index: 10; }
 
-/* Front and Back structure */
 .flip-card-front, .flip-card-back {
   position: absolute;
   width: 100%;
@@ -65,17 +60,14 @@ st.markdown("""
   flex-direction: column;
 }
 
-/* Rarity Borders */
 .rarity-Common .flip-card-inner { border: 3px solid #666666; }
 .rarity-Rare .flip-card-inner { border: 3px solid #0070dd; box-shadow: 0 0 10px rgba(0,112,221,0.5); }
 .rarity-Epic .flip-card-inner { border: 3px solid #a335ee; box-shadow: 0 0 15px rgba(163,53,238,0.6); }
 .rarity-Legendary .flip-card-inner { border: 3px solid #ff8000; box-shadow: 0 0 20px rgba(255,128,0,0.8); }
 
-/* Target Glowing */
 .is-targetable .flip-card-inner { box-shadow: 0 0 0 4px rgba(255,205,0,0.5), 0 0 20px rgba(255,205,0,0.6); cursor: crosshair; }
 .is-selected .flip-card-inner { box-shadow: 0 0 0 4px rgba(74,140,255,0.5), 0 0 20px rgba(74,140,255,0.6); }
 
-/* Combat & Death Animations */
 @keyframes lungeUp { 0% { transform: translateY(0); } 50% { transform: translateY(-30px) scale(1.05); } 100% { transform: translateY(0); } }
 @keyframes shakeDamage { 0% { transform: translateX(0); filter: brightness(1); } 20% { transform: translateX(-10px); filter: brightness(2) hue-rotate(-50deg); } 40% { transform: translateX(10px); } 60% { transform: translateX(-10px); } 80% { transform: translateX(10px); } 100% { transform: translateX(0); filter: brightness(1); } }
 @keyframes fadeOutDown { 0% { opacity: 1; transform: translateY(0) scale(1); filter: grayscale(0%); } 100% { opacity: 0; transform: translateY(30px) scale(0.9); filter: grayscale(100%); } }
@@ -131,24 +123,32 @@ def call_llm_api(theme):
     system_prompt = f"""
     You are an expert card game designer. Create a balanced, thematic card game scenario based ONLY on this theme: '{theme}'.
     
-    Return ONLY a valid JSON object with this exact structure:
+    Return ONLY a valid JSON object matching this EXACT template:
     {{
       "lore": "Two paragraphs describing the conflict and factions.",
       "stage": {{"name": "Stage Name", "type": "Stage", "visuals": {{"css_gradient": "linear-gradient(to bottom, #111111, #444444)"}}}},
-      "player_cards": [ Generate exactly 6 Attack cards and 2 Buff cards ],
-      "enemy_cards": [ Generate exactly 6 Attack cards and 2 Buff cards ]
+      "player_cards": [
+        {{
+          "name": "Card Name",
+          "type": "Attack",
+          "rarity": "Rare",
+          "atk": 5,
+          "def": 4,
+          "desc": "A thematic lore sentence about this specific character.",
+          "ability": {{"name": "Strike", "desc": "Deals 2 damage."}}
+        }},
+        {{
+          "name": "Another Card",
+          "type": "Buff",
+          "rarity": "Common",
+          "desc": "A lore sentence about this spell or item.",
+          "stat_modifier": {{"atk": 2, "def": 0}}
+        }}
+      ],
+      "enemy_cards": [ ... same structure as player_cards ... ]
     }}
     
-    Rules for ALL cards:
-    - MUST include a "desc" field containing 1-2 sentences of thematic lore.
-    - MUST include a "rarity" field (choose exactly one: "Common", "Rare", "Epic", "Legendary").
-    
-    Rules for Attack cards:
-    - MUST have 'atk' (1-8) and 'def' (1-8).
-    - Optionally include an 'ability' object: {{"name": "Cleave", "desc": "Deals 2 damage to enemy leader."}}
-    
-    Rules for Buff cards:
-    - MUST have 'stat_modifier' object (e.g. {{"atk": 2, "def": 1}}).
+    CRITICAL: You MUST generate exactly 6 Attack cards and 2 Buff cards per faction. Every single card MUST have a "desc" field with lore.
     """
 
     try:
@@ -163,9 +163,10 @@ def call_llm_api(theme):
         return None
 
 def fetch_real_ai_image(prompt: str) -> str:
-    safe_prompt = urllib.parse.quote(prompt.replace('"', '').replace("'", "") + ", fantasy trading card portrait")
+    # Using quote_plus and the /p/ endpoint for maximum stability
+    safe_prompt = urllib.parse.quote_plus(prompt + ", fantasy trading card portrait, masterpiece")
     seed = random.randint(1, 100000)
-    return f"[https://image.pollinations.ai/prompt/](https://image.pollinations.ai/prompt/){safe_prompt}?width=256&height=384&nologo=true&n=1&seed={seed}"
+    return f"[https://pollinations.ai/p/](https://pollinations.ai/p/){safe_prompt}?width=256&height=384&seed={seed}"
 
 # --- Game Logic ---
 def setup_game(theme):
@@ -340,16 +341,18 @@ def render_card(card, location_type, is_enemy=False):
     if card.get('is_dead'): wrapper_classes.append("anim-death")
     if card.get('is_consumed'): wrapper_classes.append("anim-consume")
 
-    # Construct HTML as a flat string to avoid Markdown code block bugs
+    # FRONT
     html = f"<div class='flip-card {' '.join(wrapper_classes)}'>"
     html += "<label style='display:block; width:100%; height:100%; margin:0; cursor:pointer;'>"
     html += "<input type='checkbox' class='flip-checkbox' style='display:none;'>"
     html += "<div class='flip-card-inner'>"
     
-    # FRONT
     html += "<div class='flip-card-front'>"
+    
+    # ADDED referrerpolicy='no-referrer' TO BYPASS BLOCKS
     fallback_img = "[https://placehold.co/256x384/1E1E24/FFF?text=Image+Blocked](https://placehold.co/256x384/1E1E24/FFF?text=Image+Blocked)"
-    html += f"<img src='{card.get('image', '')}' onerror=\"this.onerror=null;this.src='{fallback_img}';\" style='width:100%; height:100%; object-fit:cover; opacity:0.9;'>"
+    html += f"<img src='{card.get('image', '')}' referrerpolicy='no-referrer' onerror=\"this.onerror=null;this.src='{fallback_img}';\" style='width:100%; height:100%; object-fit:cover; opacity:0.9;'>"
+    
     if card.get('type') == 'Attack':
         html += "<div style='position:absolute; bottom:35px; width:100%; display:flex; justify-content:space-between; padding:0 10px; font-weight:bold; font-size:16px; text-shadow:1px 1px 2px #000;'>"
         html += f"<span style='background:rgba(200,40,40,0.9); padding:2px 8px; border-radius:4px;'>⚔️ {card.get('atk', 0)}</span>"
@@ -363,7 +366,11 @@ def render_card(card, location_type, is_enemy=False):
     html += "<div class='flip-card-back'>"
     html += "<div style='padding:15px; flex-grow:1; overflow-y:auto;'>"
     html += f"<h4 style='margin:0 0 5px 0; border-bottom:1px solid #555; padding-bottom:5px; font-size:16px;'>{card['name']}</h4>"
-    html += f"<p style='margin:0 0 10px 0; font-size:11px; color:#aaa;'>[{card['type']} - {card.get('rarity')}]</p>"
+    html += f"<p style='margin:0 0 5px 0; font-size:11px; color:#aaa;'>[{card['type']} - {card.get('rarity')}]</p>"
+    
+    # The Debug Link - Ultimate Troubleshooting Tool
+    html += f"<p style='margin:0 0 10px 0; font-size:10px;'><a href='{card.get('image')}' target='_blank' style='color:#4a8cff; text-decoration:none;'>[Test Image Link]</a></p>"
+    
     html += f"<p style='margin:0; font-size:12px; font-style:italic; color:#ddd;'>\"{card.get('desc', 'No lore.')}\"</p>"
     html += "</div>"
     
