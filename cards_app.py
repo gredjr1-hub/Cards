@@ -104,7 +104,7 @@ state_defaults = {
     'theme': "", 'deck': [], 'hand': [], 'board': [],
     'enemy_deck': [], 'enemy_hand': [], 'enemy_board': [],
     'player_hp': 30, 'enemy_hp': 30,
-    'max_ap': 3, 'current_ap': 3,
+    'max_ap': 3, 'current_ap': 3, 
     'active_stage': None, 'lore': "",
     'turn_count': 1, 'battle_log': [],
     'selected_attacker': None, 'selected_buff': None, 
@@ -154,7 +154,8 @@ def call_llm_api(theme):
     }}
     CRITICAL INSTRUCTIONS:
     1. Generate exactly 6 Attack cards and 2 Buff cards per faction.
-    2. 'mechanics' MUST be an array. Include at least 2 cards per faction with mechanics like: "Taunt" (Must be attacked first), "Lifesteal", "Cleave", or "Deathrattle".
+    2. 'type' MUST be exactly "Attack" or "Buff".
+    3. 'mechanics' MUST be an array. Include at least 2 cards per faction with mechanics like: "Taunt" (Must be attacked first), "Lifesteal", "Cleave", or "Deathrattle".
     """
     try:
         from google import genai
@@ -211,22 +212,24 @@ def setup_game(theme):
             new_card['rarity'] = card.get('rarity', 'Common')
             new_card['desc'] = card.get('desc', 'A combatant enters the fray.')
             
-            # --- STRICT AI SANITIZER ---
+            # --- AI SANITIZER (Ensures proper formatting) ---
             mechs = card.get('mechanics', [])
             new_card['mechanics'] = mechs if isinstance(mechs, list) else [str(mechs)] if mechs else []
             
             ab = card.get('ability', {})
-            if not isinstance(ab, dict):
-                new_card['ability'] = {'name': 'Ability', 'desc': str(ab) if ab else ''}
-            else:
-                new_card['ability'] = ab
+            if not isinstance(ab, dict): new_card['ability'] = {'name': 'Ability', 'desc': str(ab) if ab else ''}
+            else: new_card['ability'] = ab
                 
             mods = card.get('stat_modifier', {})
-            if not isinstance(mods, dict):
-                new_card['stat_modifier'] = {'atk': 1, 'def': 1}
-            else:
-                new_card['stat_modifier'] = mods
-            # ---------------------------
+            if not isinstance(mods, dict): new_card['stat_modifier'] = {'atk': 1, 'def': 1}
+            else: new_card['stat_modifier'] = mods
+            
+            # CRITICAL TYPE CHECK: Prevents invisible cards
+            card_type = card.get('type', 'Attack')
+            if card_type not in ['Attack', 'Buff']:
+                card_type = 'Attack' if 'atk' in card else 'Buff'
+            new_card['type'] = card_type
+            # ------------------------------------------------
             
             new_card['ability_used'] = False
             new_card['is_dead'] = False
@@ -264,6 +267,7 @@ def setup_game(theme):
     st.session_state.game_over = False
 
 def play_card(card_id, is_player=True):
+    """Summons a card and explicitly reassigns state to force a UI rerender."""
     if is_player and st.session_state.current_ap < 1: 
         st.warning("Not enough AP to deploy!"); return
         
@@ -272,8 +276,11 @@ def play_card(card_id, is_player=True):
         st.warning("Board is full! Max 5 units."); return
 
     cleanup_dead_cards()
-    hand = st.session_state.hand if is_player else st.session_state.enemy_hand
-    deck = st.session_state.deck if is_player else st.session_state.enemy_deck
+    
+    # Use physical copies to ensure Streamlit tracks the mutation
+    hand = list(st.session_state.hand if is_player else st.session_state.enemy_hand)
+    deck = list(st.session_state.deck if is_player else st.session_state.enemy_deck)
+    board = list(st.session_state.board if is_player else st.session_state.enemy_board)
     
     card_idx = next((i for i, c in enumerate(hand) if c['id'] == card_id), None)
     if card_idx is None: return
@@ -282,9 +289,20 @@ def play_card(card_id, is_player=True):
     card['sick'] = True
     board.append(card)
     
-    if is_player: st.session_state.current_ap -= 1
-    log_event(f"🃏 {'Player' if is_player else 'Enemy'} deployed {card['name']}.")
     if deck: hand.append(deck.pop())
+    
+    # EXPLICIT REASSIGNMENT: Fixes the bug where played cards don't display
+    if is_player:
+        st.session_state.hand = hand
+        st.session_state.board = board
+        st.session_state.deck = deck
+        st.session_state.current_ap -= 1
+    else:
+        st.session_state.enemy_hand = hand
+        st.session_state.enemy_board = board
+        st.session_state.enemy_deck = deck
+        
+    log_event(f"🃏 {'Player' if is_player else 'Enemy'} deployed {card['name']}.")
 
 def apply_buff(buff_id, target_id):
     if st.session_state.current_ap < 1: return
@@ -310,6 +328,10 @@ def apply_buff(buff_id, target_id):
     buff_card['is_consumed'] = True 
     log_event(f"✨ Applied {buff_card['name']} to {target_card['name']} (+{atk_mod} ATK, +{def_mod} DEF)!")
     st.session_state.animation_state = {'type': 'buff', 'target_id': target_card['id']}
+    
+    # Explicit Sync
+    st.session_state.board = list(st.session_state.board)
+    st.session_state.hand = list(st.session_state.hand)
     if st.session_state.deck: st.session_state.hand.append(st.session_state.deck.pop())
 
 def has_taunt(board):
@@ -340,6 +362,8 @@ def resolve_attack(attacker_id, target_id):
     if target['def'] <= 0:
         log_event(f"💀 {target['name']} was destroyed!")
         target['is_dead'] = True 
+        
+    st.session_state.enemy_board = list(st.session_state.enemy_board)
     check_win_condition()
 
 def resolve_direct_attack(attacker_id):
@@ -395,6 +419,7 @@ def execute_enemy_turn():
                 st.session_state.player_hp -= atk
                 log_event(f"💥 Enemy {enemy_card['name']} hit YOU for {atk} DMG!")
 
+    st.session_state.board = list(st.session_state.board)
     check_win_condition()
     st.session_state.turn_count += 1
     
@@ -453,7 +478,7 @@ def render_card(card, location_type, is_enemy=False, is_hidden=False):
     html += ap_badge
     html += f"<img src='{card.get('image', '')}' style='width:100%; height:100%; object-fit:cover; opacity:0.9; background-color: #2b2b36;'>"
     
-    # UI FIX: Unified Top Bar (Stats + Type perfectly nested together)
+    # NEW UI FIX: Unified Top Bar (Stats + Type nestled together)
     html += "<div style='position:absolute; top:10px; width:100%; display:flex; justify-content:space-between; align-items:flex-start; padding:0 10px; font-weight:bold; font-size:16px; text-shadow:2px 2px 4px #000; z-index: 5;'>"
     
     if card.get('type') == 'Attack':
@@ -461,18 +486,17 @@ def render_card(card, location_type, is_enemy=False, is_hidden=False):
         sick_indicator = " 💤" if card.get('sick', False) else ""
         html += f"<span style='background:rgba(200,40,40,0.9); padding:2px 8px; border-radius:4px;'>⚔️ {card.get('atk', 0)}{sick_indicator}</span>"
     else:
-        html += "<span style='width:40px;'></span>" # Invisible spacer for layout balance
+        html += "<span style='width:40px;'></span>" 
         
     html += f"<span style='background:rgba(0,0,0,0.8); padding:2px 8px; border-radius:10px; font-size:10px; font-weight:bold; text-transform:uppercase; letter-spacing:1px; border:1px solid #555; text-shadow:none; margin-top:2px;'>{card.get('type', 'Unknown')}</span>"
     
     if card.get('type') == 'Attack':
         html += f"<span style='background:rgba(40,100,200,0.9); padding:2px 8px; border-radius:4px;'>🛡️ {card.get('def', 0)}{buff_indicator}</span>"
     else:
-        html += "<span style='width:40px;'></span>" # Invisible spacer for layout balance
+        html += "<span style='width:40px;'></span>"
 
     html += "</div>"
     
-    # Card Title Footer    
     html += "<div style='position:absolute; bottom:0; width:100%; background:rgba(0,0,0,0.85); padding:8px; border-top:1px solid #555; z-index: 5;'>"
     html += f"<h4 style='margin:0; font-size:14px; text-overflow: ellipsis; white-space: nowrap; overflow:hidden;'>{card['name']}</h4>"
     html += "</div></div>"
@@ -488,7 +512,6 @@ def render_card(card, location_type, is_enemy=False, is_hidden=False):
         html += f"<div style='margin-top: 10px; font-size: 11px; color: #4a8cff; background:rgba(74,140,255,0.1); padding: 5px; border-radius: 4px;'><b>✨ Buffs:</b><br>{', '.join(card['applied_buffs'])}</div>"
     html += "</div>"
     
-    # Safe Ability Render
     if 'ability' in card:
         ab = card['ability']
         if not isinstance(ab, dict): ab = {'name': 'Ability', 'desc': str(ab)}
@@ -522,6 +545,10 @@ def render_card(card, location_type, is_enemy=False, is_hidden=False):
                     if st.button("Cast Spell (1 AP)", key=f"use_{card_key}", type="primary", disabled=not has_ap):
                         st.session_state.selected_buff = card['id']
                         st.session_state.selected_attacker = None; st.rerun()
+                
+                # Instruction helper for casting
+                if is_selected_buff:
+                    st.info("⬆️ Select board target")
 
         elif not is_enemy and location_type == 'board':
             if is_targetable_friendly:
@@ -543,7 +570,6 @@ def render_card(card, location_type, is_enemy=False, is_hidden=False):
                 resolve_attack(st.session_state.selected_attacker, card['id'])
                 st.session_state.selected_attacker = None; st.rerun()
 
-        # Paint Art Button
         if not card.get('has_ai_art', False):
             if st.button("🎨 Paint Art", key=f"paint_{card_key}"):
                 with st.spinner(f"Painting {card['name']}..."):
