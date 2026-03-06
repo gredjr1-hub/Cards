@@ -10,13 +10,18 @@ import requests
 # --- Page Config ---
 st.set_page_config(page_title="AI Card Battler", layout="wide", initial_sidebar_state="collapsed")
 
+# --- Base64 URL Decoders (Bypasses UI formatting bugs) ---
+def get_url_jsonbin(): return base64.b64decode("aHR0cHM6Ly9hcGkuanNvbmJpbi5pby92My9iLw==").decode("utf-8")
+def get_url_placeholder(): return base64.b64decode("aHR0cHM6Ly9wbGFjZWhvbGQuY28vMjU2eDM4NC8yYjJiMzYvODg4ODg4LnBuZz90ZXh0PQ==").decode("utf-8")
+def get_url_hf(): return base64.b64decode("aHR0cHM6Ly9hcGktaW5mZXJlbmNlLmh1Z2dpbmdmYWNlLmNvL21vZGVscy9ibGFjay1mb3Jlc3QtbGFicy9GTFVYLjEtc2NobmVsbA==").decode("utf-8")
+
 # --- Cloud Repository System (JSONBin) ---
 def load_repository():
     bin_id = st.secrets.get("JSONBIN_BIN_ID")
     api_key = st.secrets.get("JSONBIN_API_KEY")
     if not bin_id or not api_key: return {}
     try:
-        url = f"https://api.jsonbin.io/v3/b/{bin_id}/latest"
+        url = f"{get_url_jsonbin()}{bin_id}/latest"
         headers = {"X-Master-Key": api_key}
         response = requests.get(url, headers=headers)
         if response.status_code == 200:
@@ -32,7 +37,7 @@ def save_to_repository(card_name, image_data):
     try:
         db = load_repository()
         db[card_name] = image_data 
-        url = f"https://api.jsonbin.io/v3/b/{bin_id}"
+        url = f"{get_url_jsonbin()}{bin_id}"
         headers = {"Content-Type": "application/json", "X-Master-Key": api_key}
         requests.put(url, json=db, headers=headers)
     except Exception as e:
@@ -141,10 +146,9 @@ def call_llm_api(theme):
 
 def fetch_placeholder_image(card_name: str) -> str:
     safe_name = urllib.parse.quote(card_name.replace(" ", "\n"))
-    return f"[https://placehold.co/256x384/2b2b36/888888.png?text=](https://placehold.co/256x384/2b2b36/888888.png?text=){safe_name}"
+    return f"{get_url_placeholder()}{safe_name}"
 
 def fetch_ai_image(card_name: str, card_type: str, theme: str):
-    """Hits the Hugging Face Free Inference API using the FLUX.1-schnell model."""
     hf_token = st.secrets.get("HF_TOKEN", "")
     if not hf_token: 
         return None, "Missing HF_TOKEN in secrets.toml! Please add your free Hugging Face token."
@@ -155,18 +159,14 @@ def fetch_ai_image(card_name: str, card_type: str, theme: str):
         prompt_text = f"A fantasy trading card portrait of a character or creature called '{card_name}'. Theme: {theme}. Masterpiece, highly detailed character concept art."
         
     try:
-        API_URL = "[https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell](https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell)"
         headers = {"Authorization": f"Bearer {hf_token}"}
         payload = {"inputs": prompt_text}
-
-        # Send request to Hugging Face
-        response = requests.post(API_URL, headers=headers, json=payload, timeout=30)
+        response = requests.post(get_url_hf(), headers=headers, json=payload, timeout=30)
 
         if response.status_code == 200:
             b64 = base64.b64encode(response.content).decode('utf-8')
             return f"data:image/jpeg;base64,{b64}", None
         elif response.status_code == 503:
-            # 503 means the model is currently waking up on HF's servers. 
             return None, "Model is waking up! Please click Paint AI Art again in 10 seconds."
         else:
             return None, f"HF API Error {response.status_code}: {response.text}"
