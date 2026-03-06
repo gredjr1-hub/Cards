@@ -143,30 +143,33 @@ def fetch_placeholder_image(card_name: str) -> str:
     safe_name = urllib.parse.quote(card_name.replace(" ", "\n"))
     return f"[https://placehold.co/256x384/2b2b36/888888.png?text=](https://placehold.co/256x384/2b2b36/888888.png?text=){safe_name}"
 
-def fetch_ai_image(card_name: str, card_type: str, theme: str, api_key: str):
-    """Lazy Loader that returns a tuple: (image_data, error_message)."""
-    if not api_key: return None, "Missing Gemini API Key."
+def fetch_ai_image(card_name: str, card_type: str, theme: str):
+    """Hits the Hugging Face Free Inference API using the FLUX.1-schnell model."""
+    hf_token = st.secrets.get("HF_TOKEN", "")
+    if not hf_token: 
+        return None, "Missing HF_TOKEN in secrets.toml! Please add your free Hugging Face token."
     
     if card_type == "Buff":
-        prompt_text = f"A harmless fantasy game prop representing '{card_name}'. Theme: {theme}. Single object focus, fantasy trading card illustration, masterpiece, dark background. No real weapons, completely safe for work."
+        prompt_text = f"A fantasy trading card illustration of a magical item or object called '{card_name}'. Theme: {theme}. Masterpiece, highly detailed, dark background, single object focus."
     else:
-        prompt_text = f"A stylized, harmless fictional character avatar called '{card_name}'. Theme: {theme}. Fantasy trading card portrait, masterpiece, highly detailed. No violence, completely safe for work."
+        prompt_text = f"A fantasy trading card portrait of a character or creature called '{card_name}'. Theme: {theme}. Masterpiece, highly detailed character concept art."
         
     try:
-        from google import genai
-        from google.genai import types
-        client = genai.Client(api_key=api_key)
-        result = client.models.generate_images(
-            model='imagen-3.0-generate-001', # <-- Fixed to the standard public model
-            prompt=prompt_text,
-            config=types.GenerateImagesConfig(
-                number_of_images=1,
-                aspect_ratio="3:4",
-                output_mime_type="image/jpeg"
-            )
-        )
-        b64 = base64.b64encode(result.generated_images[0].image.image_bytes).decode('utf-8')
-        return f"data:image/jpeg;base64,{b64}", None
+        API_URL = "[https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell](https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell)"
+        headers = {"Authorization": f"Bearer {hf_token}"}
+        payload = {"inputs": prompt_text}
+
+        # Send request to Hugging Face
+        response = requests.post(API_URL, headers=headers, json=payload, timeout=30)
+
+        if response.status_code == 200:
+            b64 = base64.b64encode(response.content).decode('utf-8')
+            return f"data:image/jpeg;base64,{b64}", None
+        elif response.status_code == 503:
+            # 503 means the model is currently waking up on HF's servers. 
+            return None, "Model is waking up! Please click Paint AI Art again in 10 seconds."
+        else:
+            return None, f"HF API Error {response.status_code}: {response.text}"
     except Exception as e:
         return None, str(e) 
 
@@ -340,10 +343,7 @@ def render_card(card, location_type, is_enemy=False):
     html += "<div class='flip-card-inner'>"
     
     html += "<div class='flip-card-front'>"
-    
-    fallback_img = base64.b64decode("aHR0cHM6Ly9kdW1teWltYWdlLmNvbS8yNTZ4Mzg0LzFFMUUyNC9GRkZGRkYucG5nP3RleHQ9Tm8rSW1hZ2U=").decode("utf-8")
-    
-    html += f"<img src='{card.get('image', fallback_img)}' referrerpolicy='no-referrer' onerror=\"this.onerror=null;this.src='{fallback_img}';\" style='width:100%; height:100%; object-fit:cover; opacity:0.9; background-color: #2b2b36;'>"
+    html += f"<img src='{card.get('image', '')}' style='width:100%; height:100%; object-fit:cover; opacity:0.9; background-color: #2b2b36;'>"
     
     if card.get('type') == 'Attack':
         html += "<div style='position:absolute; bottom:35px; width:100%; display:flex; justify-content:space-between; padding:0 10px; font-weight:bold; font-size:16px; text-shadow:1px 1px 2px #000;'>"
@@ -415,18 +415,16 @@ def render_card(card, location_type, is_enemy=False):
                 resolve_attack(st.session_state.selected_attacker, card['id'])
                 st.session_state.selected_attacker = None; st.rerun()
 
-        # --- THE LAZY LOADER BUTTON ---
+        # --- THE HUGGING FACE LAZY LOADER BUTTON ---
         if not card.get('has_ai_art', False) and not is_enemy:
             if st.button("🎨 Paint AI Art", key=f"paint_{card_key}"):
-                api_key = st.secrets.get("GEMINI_API_KEY", "")
-                with st.spinner(f"Painting {card['name']}..."):
-                    new_img, error_msg = fetch_ai_image(card['name'], card.get('type', 'Attack'), st.session_state.theme, api_key)
+                with st.spinner(f"Hugging Face is painting {card['name']}..."):
+                    new_img, error_msg = fetch_ai_image(card['name'], card.get('type', 'Attack'), st.session_state.theme)
                     if new_img:
                         save_to_repository(card['name'], new_img)
                         sync_art_across_game(card['name'], new_img)
                         st.rerun()
                     else:
-                        # EXACT ERROR DIAGNOSTICS:
                         st.error(f"Generation Failed: {error_msg}")
 
 # --- Main UI Rendering ---
