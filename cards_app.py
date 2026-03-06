@@ -295,7 +295,6 @@ def apply_buff(buff_id, target_id):
     
     st.session_state.current_ap -= 1
     
-    # Absolute safe extraction
     mods = buff_card.get('stat_modifier', {})
     if not isinstance(mods, dict): mods = {'atk': 1, 'def': 1}
     
@@ -454,18 +453,26 @@ def render_card(card, location_type, is_enemy=False, is_hidden=False):
     html += ap_badge
     html += f"<img src='{card.get('image', '')}' style='width:100%; height:100%; object-fit:cover; opacity:0.9; background-color: #2b2b36;'>"
     
+    # UI FIX: Unified Top Bar (Stats + Type perfectly nested together)
+    html += "<div style='position:absolute; top:10px; width:100%; display:flex; justify-content:space-between; align-items:flex-start; padding:0 10px; font-weight:bold; font-size:16px; text-shadow:2px 2px 4px #000; z-index: 5;'>"
+    
     if card.get('type') == 'Attack':
         buff_indicator = " ✨" if card.get('applied_buffs') else ""
         sick_indicator = " 💤" if card.get('sick', False) else ""
-        html += "<div style='position:absolute; top:10px; width:100%; display:flex; justify-content:space-between; padding:0 10px; font-weight:bold; font-size:16px; text-shadow:2px 2px 4px #000; z-index: 5;'>"
         html += f"<span style='background:rgba(200,40,40,0.9); padding:2px 8px; border-radius:4px;'>⚔️ {card.get('atk', 0)}{sick_indicator}</span>"
-        html += f"<span style='background:rgba(40,100,200,0.9); padding:2px 8px; border-radius:4px;'>🛡️ {card.get('def', 0)}{buff_indicator}</span>"
-        html += "</div>"
-    
-    html += "<div style='position:absolute; bottom:32px; width:100%; text-align:center; z-index: 5;'>"
-    html += f"<span style='background:rgba(0,0,0,0.8); padding:2px 10px; border-radius:10px; font-size:10px; font-weight:bold; text-transform:uppercase; letter-spacing:1px; border:1px solid #555;'>{card.get('type', 'Unknown')}</span>"
-    html += "</div>"
+    else:
+        html += "<span style='width:40px;'></span>" # Invisible spacer for layout balance
         
+    html += f"<span style='background:rgba(0,0,0,0.8); padding:2px 8px; border-radius:10px; font-size:10px; font-weight:bold; text-transform:uppercase; letter-spacing:1px; border:1px solid #555; text-shadow:none; margin-top:2px;'>{card.get('type', 'Unknown')}</span>"
+    
+    if card.get('type') == 'Attack':
+        html += f"<span style='background:rgba(40,100,200,0.9); padding:2px 8px; border-radius:4px;'>🛡️ {card.get('def', 0)}{buff_indicator}</span>"
+    else:
+        html += "<span style='width:40px;'></span>" # Invisible spacer for layout balance
+
+    html += "</div>"
+    
+    # Card Title Footer    
     html += "<div style='position:absolute; bottom:0; width:100%; background:rgba(0,0,0,0.85); padding:8px; border-top:1px solid #555; z-index: 5;'>"
     html += f"<h4 style='margin:0; font-size:14px; text-overflow: ellipsis; white-space: nowrap; overflow:hidden;'>{card['name']}</h4>"
     html += "</div></div>"
@@ -536,6 +543,7 @@ def render_card(card, location_type, is_enemy=False, is_hidden=False):
                 resolve_attack(st.session_state.selected_attacker, card['id'])
                 st.session_state.selected_attacker = None; st.rerun()
 
+        # Paint Art Button
         if not card.get('has_ai_art', False):
             if st.button("🎨 Paint Art", key=f"paint_{card_key}"):
                 with st.spinner(f"Painting {card['name']}..."):
