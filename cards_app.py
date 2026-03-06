@@ -13,7 +13,8 @@ st.set_page_config(page_title="AI Card Battler", layout="wide", initial_sidebar_
 # --- Base64 URL Decoders (Bypasses UI formatting bugs) ---
 def get_url_jsonbin(): return base64.b64decode("aHR0cHM6Ly9hcGkuanNvbmJpbi5pby92My9iLw==").decode("utf-8")
 def get_url_placeholder(): return base64.b64decode("aHR0cHM6Ly9wbGFjZWhvbGQuY28vMjU2eDM4NC8yYjJiMzYvODg4ODg4LnBuZz90ZXh0PQ==").decode("utf-8")
-def get_url_hf(): return base64.b64decode("aHR0cHM6Ly9hcGktaW5mZXJlbmNlLmh1Z2dpbmdmYWNlLmNvL21vZGVscy9ibGFjay1mb3Jlc3QtbGFicy9GTFVYLjEtc2NobmVsbA==").decode("utf-8")
+# CRITICAL FIX: Updated to the new Hugging Face Router API endpoint!
+def get_url_hf(): return base64.b64decode("aHR0cHM6Ly9yb3V0ZXIuaHVnZ2luZ2ZhY2UuY28vaGYtaW5mZXJlbmNlL21vZGVscy9ibGFjay1mb3Jlc3QtbGFicy9GTFVYLjEtc2NobmVsbA==").decode("utf-8")
 
 # --- Cloud Repository System (JSONBin) ---
 def load_repository():
@@ -161,6 +162,8 @@ def fetch_ai_image(card_name: str, card_type: str, theme: str):
     try:
         headers = {"Authorization": f"Bearer {hf_token}"}
         payload = {"inputs": prompt_text}
+        
+        # Uses the newly updated router endpoint
         response = requests.post(get_url_hf(), headers=headers, json=payload, timeout=30)
 
         if response.status_code == 200:
