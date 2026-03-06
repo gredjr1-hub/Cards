@@ -147,7 +147,6 @@ def fetch_ai_image(card_name: str, card_type: str, theme: str, api_key: str):
     """Lazy Loader that returns a tuple: (image_data, error_message)."""
     if not api_key: return None, "Missing Gemini API Key."
     
-    # Softened prompt engineering to bypass aggressive safety filters
     if card_type == "Buff":
         prompt_text = f"A harmless fantasy game prop representing '{card_name}'. Theme: {theme}. Single object focus, fantasy trading card illustration, masterpiece, dark background. No real weapons, completely safe for work."
     else:
@@ -158,7 +157,7 @@ def fetch_ai_image(card_name: str, card_type: str, theme: str, api_key: str):
         from google.genai import types
         client = genai.Client(api_key=api_key)
         result = client.models.generate_images(
-            model='imagen-3.0-generate-002',
+            model='imagen-3.0-generate-001', # <-- Fixed to the standard public model
             prompt=prompt_text,
             config=types.GenerateImagesConfig(
                 number_of_images=1,
@@ -169,7 +168,6 @@ def fetch_ai_image(card_name: str, card_type: str, theme: str, api_key: str):
         b64 = base64.b64encode(result.generated_images[0].image.image_bytes).decode('utf-8')
         return f"data:image/jpeg;base64,{b64}", None
     except Exception as e:
-        # We capture the EXACT error string from Google so you can see if it's a safety block!
         return None, str(e) 
 
 # --- Game Logic ---
