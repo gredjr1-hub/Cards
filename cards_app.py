@@ -104,7 +104,7 @@ state_defaults = {
     'theme': "", 'deck': [], 'hand': [], 'board': [],
     'enemy_deck': [], 'enemy_hand': [], 'enemy_board': [],
     'player_hp': 30, 'enemy_hp': 30,
-    'max_ap': 3, 'current_ap': 3, # NEW: Action Points system
+    'max_ap': 3, 'current_ap': 3,
     'active_stage': None, 'lore': "",
     'turn_count': 1, 'battle_log': [],
     'selected_attacker': None, 'selected_buff': None, 
@@ -130,12 +130,11 @@ def cleanup_dead_cards():
     st.session_state.enemy_board = [c for c in st.session_state.enemy_board if not c.get('is_dead', False)]
     st.session_state.hand = [c for c in st.session_state.hand if not c.get('is_consumed', False)]
 
-# --- Live API Integration (Advanced Mechanics) ---
+# --- Live API Integration ---
 def call_llm_api(theme):
     api_key = st.secrets.get("GEMINI_API_KEY", "")
     if not api_key: return None
 
-    # NEW: Prompt instructs the AI to use Keywords (Taunt, Lifesteal, Cleave, etc)
     system_prompt = f"""
     You are an expert card game designer like the creators of Hearthstone. Create a thematic scenario based on: '{theme}'.
     Return ONLY a valid JSON object matching this template:
@@ -216,7 +215,7 @@ def setup_game(theme):
             new_card['is_dead'] = False
             new_card['is_consumed'] = False
             new_card['applied_buffs'] = [] 
-            new_card['sick'] = True # Summoning Sickness
+            new_card['sick'] = True
             
             if new_card['name'] in db:
                 new_card['image'] = db[new_card['name']]
@@ -263,7 +262,7 @@ def play_card(card_id, is_player=True):
     if card_idx is None: return
 
     card = hand.pop(card_idx)
-    card['sick'] = True # Cannot attack this turn
+    card['sick'] = True
     board.append(card)
     
     if is_player: st.session_state.current_ap -= 1
@@ -301,7 +300,6 @@ def resolve_attack(attacker_id, target_id):
     target = next((c for c in st.session_state.enemy_board if c['id'] == target_id), None)
     if not attacker or not target: return
 
-    # Taunt Logic Enforced
     if has_taunt(st.session_state.enemy_board) and "Taunt" not in target.get('mechanics', []):
         st.error("You MUST attack the enemy unit with Taunt first!"); return
 
@@ -310,7 +308,6 @@ def resolve_attack(attacker_id, target_id):
     target['def'] = int(target.get('def', 0)) - atk
     log_event(f"🎯 {attacker['name']} hit {target['name']} for {atk} DMG!")
     
-    # Lifesteal Logic
     if "Lifesteal" in attacker.get('mechanics', []):
         st.session_state.player_hp += atk
         log_event(f"🩸 {attacker['name']}'s Lifesteal healed you for {atk}!")
@@ -350,10 +347,8 @@ def execute_enemy_turn():
     log_event("--- Enemy Turn ---")
     st.session_state.animation_state = {} 
     
-    # Enemy clears summoning sickness
     for c in st.session_state.enemy_board: c['sick'] = False
     
-    # Simple Enemy AI: Plays 1 card, then attacks with everything
     if st.session_state.enemy_hand and len(st.session_state.enemy_board) < 5:
         for c in st.session_state.enemy_hand:
             if c.get('type') == 'Attack':
@@ -365,7 +360,6 @@ def execute_enemy_turn():
             atk = int(enemy_card.get('atk', 0))
             valid_targets = [c for c in st.session_state.board if not c.get('is_dead')]
             
-            # Enemy respects Player's Taunt
             taunts = [t for t in valid_targets if "Taunt" in t.get('mechanics', [])]
             target = random.choice(taunts) if taunts else (valid_targets[0] if valid_targets else None)
             
@@ -382,11 +376,9 @@ def execute_enemy_turn():
     check_win_condition()
     st.session_state.turn_count += 1
     
-    # AP Refresh & Scaling
     st.session_state.max_ap = min(10, 3 + (st.session_state.turn_count // 2))
     st.session_state.current_ap = st.session_state.max_ap
     
-    # Player clears summoning sickness
     for c in st.session_state.board: c['sick'] = False
     st.session_state.attacks_used = set()
     log_event(f"--- Your Turn (AP: {st.session_state.max_ap}) ---")
@@ -398,7 +390,7 @@ def end_turn():
 
 # --- UI Rendering Helpers ---
 def render_card(card, location_type, is_enemy=False, is_hidden=False):
-    if is_hidden: # Used for rendering Enemy Hand (Card Backs)
+    if is_hidden: 
         html = "<div class='flip-card'><div class='flip-card-inner'><div class='flip-card-front card-back-design'>🔮</div></div></div>"
         st.markdown(html, unsafe_allow_html=True)
         return
@@ -407,7 +399,6 @@ def render_card(card, location_type, is_enemy=False, is_hidden=False):
     is_selected_attacker = (not is_enemy and location_type == 'board' and st.session_state.selected_attacker == card.get('id'))
     is_selected_buff = (not is_enemy and location_type == 'hand' and st.session_state.selected_buff == card.get('id'))
     
-    # Targetable logic including Taunt Priority
     enemy_taunt_active = has_taunt(st.session_state.enemy_board)
     is_valid_enemy_target = False
     if is_enemy and location_type == 'eboard' and st.session_state.selected_attacker and not card.get('is_dead'):
@@ -428,7 +419,6 @@ def render_card(card, location_type, is_enemy=False, is_hidden=False):
     if card.get('is_dead'): wrapper_classes.append("anim-death")
     if card.get('is_consumed'): wrapper_classes.append("anim-consume")
 
-    # AP Cost badge for hand cards
     ap_badge = "<div class='ap-cost'>1</div>" if location_type == 'hand' and not is_enemy else ""
 
     html = f"<div class='flip-card {' '.join(wrapper_classes)}'>"
@@ -436,7 +426,7 @@ def render_card(card, location_type, is_enemy=False, is_hidden=False):
     html += f"<input type='checkbox' id='flip_{card_key}' class='flip-checkbox' style='display:none;'>"
     html += "<div class='flip-card-inner'>"
     
-    # FRONT
+    # --- FRONT OF CARD ---
     html += "<div class='flip-card-front'>"
     html += ap_badge
     html += f"<img src='{card.get('image', '')}' style='width:100%; height:100%; object-fit:cover; opacity:0.9; background-color: #2b2b36;'>"
@@ -444,15 +434,22 @@ def render_card(card, location_type, is_enemy=False, is_hidden=False):
     if card.get('type') == 'Attack':
         buff_indicator = " ✨" if card.get('applied_buffs') else ""
         sick_indicator = " 💤" if card.get('sick', False) else ""
-        html += "<div style='position:absolute; bottom:35px; width:100%; display:flex; justify-content:space-between; padding:0 10px; font-weight:bold; font-size:16px; text-shadow:2px 2px 4px #000;'>"
+        # UI FIX 1: Stats moved to the TOP of the card
+        html += "<div style='position:absolute; top:10px; width:100%; display:flex; justify-content:space-between; padding:0 10px; font-weight:bold; font-size:16px; text-shadow:2px 2px 4px #000; z-index: 5;'>"
         html += f"<span style='background:rgba(200,40,40,0.9); padding:2px 8px; border-radius:4px;'>⚔️ {card.get('atk', 0)}{sick_indicator}</span>"
         html += f"<span style='background:rgba(40,100,200,0.9); padding:2px 8px; border-radius:4px;'>🛡️ {card.get('def', 0)}{buff_indicator}</span>"
         html += "</div>"
-    html += "<div style='position:absolute; bottom:0; width:100%; background:rgba(0,0,0,0.85); padding:8px; border-top:1px solid #555;'>"
+    
+    # UI FIX 2: Card Type Overlay Badge
+    html += "<div style='position:absolute; bottom:32px; width:100%; text-align:center; z-index: 5;'>"
+    html += f"<span style='background:rgba(0,0,0,0.7); padding:2px 10px; border-radius:10px; font-size:10px; font-weight:bold; text-transform:uppercase; letter-spacing:1px; border:1px solid #555;'>{card.get('type', 'Unknown')}</span>"
+    html += "</div>"
+        
+    html += "<div style='position:absolute; bottom:0; width:100%; background:rgba(0,0,0,0.85); padding:8px; border-top:1px solid #555; z-index: 5;'>"
     html += f"<h4 style='margin:0; font-size:14px; text-overflow: ellipsis; white-space: nowrap; overflow:hidden;'>{card['name']}</h4>"
     html += "</div></div>"
 
-    # BACK
+    # --- BACK OF CARD ---
     html += "<div class='flip-card-back'>"
     html += "<div style='padding:15px; flex-grow:1; overflow-y:auto;'>"
     html += f"<h4 style='margin:0 0 5px 0; border-bottom:1px solid #555; padding-bottom:5px; font-size:16px;'>{card['name']}</h4>"
@@ -466,6 +463,14 @@ def render_card(card, location_type, is_enemy=False, is_hidden=False):
     if 'ability' in card:
         ab = card['ability']
         html += f"<div style='margin:0 10px 10px 10px; background:rgba(255,255,255,0.1); padding:8px; border-radius:6px; font-size:11px;'><b style='color:#ffeb3b;'>⚡ {ab.get('name','Ability')}</b><br>{ab.get('desc','')}</div>"
+    
+    # UI FIX 3: Restored Stats Block at the bottom of the card back
+    if card.get('type') == 'Attack':
+        html += f"<div style='padding:10px; display:flex; justify-content:space-between; font-weight:bold; font-size:16px; border-top:1px solid #555; background:rgba(0,0,0,0.4); margin-top:auto;'><span>⚔️ {card.get('atk', 0)}</span><span>🛡️ {card.get('def', 0)}</span></div>"
+    elif card.get('type') == 'Buff':
+        mods = card.get('stat_modifier', {})
+        html += f"<div style='padding:10px; font-weight:bold; font-size:14px; border-top:1px solid #555; background:rgba(0,0,0,0.4); text-align:center; margin-top:auto;'>Buff: +{mods.get('atk',0)} ATK / +{mods.get('def',0)} DEF</div>"
+
     html += "</div></div></label></div>"
     st.markdown(html, unsafe_allow_html=True)
 
@@ -543,7 +548,6 @@ else:
     col1, col2, col3 = st.columns([2, 6, 2])
     with col1: st.markdown(f"<div class='hud-box'><h3 style='color:#ff4a4a; margin:0;'>Enemy Leader</h3><h2>❤️ {st.session_state.enemy_hp}</h2></div>", unsafe_allow_html=True)
     with col2:
-        # Enemy Hand (Hidden)
         if st.session_state.enemy_hand:
             ehand_cols = st.columns(len(st.session_state.enemy_hand))
             for i, card in enumerate(st.session_state.enemy_hand):
@@ -553,7 +557,6 @@ else:
     # --- THE PLAYMAT ---
     st.markdown("<div class='playmat-container'>", unsafe_allow_html=True)
     
-    # Enemy Board
     ecols = st.columns([1, 8, 1])
     with ecols[1]:
         slots = st.columns(5)
@@ -562,7 +565,6 @@ else:
                 if i < len(st.session_state.enemy_board): render_card(st.session_state.enemy_board[i], "eboard", is_enemy=True)
                 else: render_empty_slot()
 
-    # Center Divider & Combat Status
     status_text = "🟢 Awaiting Orders"
     if st.session_state.selected_attacker: 
         if has_taunt(st.session_state.enemy_board): status_text = "🛡️ You MUST attack a Taunt minion!"
@@ -572,7 +574,6 @@ else:
     st.markdown("<div class='board-divider'></div>", unsafe_allow_html=True)
     st.markdown(f"<div style='text-align:center; font-weight:bold; color:#aaa; margin-bottom:10px;'>{status_text}</div>", unsafe_allow_html=True)
 
-    # Player Board
     pcols = st.columns([1, 8, 1])
     with pcols[1]:
         slots = st.columns(5)
@@ -581,7 +582,7 @@ else:
                 if i < len(st.session_state.board): render_card(st.session_state.board[i], "board", is_enemy=False)
                 else: render_empty_slot()
                 
-    st.markdown("</div><br>", unsafe_allow_html=True) # End Playmat
+    st.markdown("</div><br>", unsafe_allow_html=True)
 
     # --- PLAYER HUD & HAND ---
     col1, col2, col3 = st.columns([2, 6, 2])
@@ -596,7 +597,6 @@ else:
                 with hand_cols[i]: render_card(card, "hand", is_enemy=False)
 
     with col3:
-        # Giant End Turn Button & Target Leader Button
         if st.button("⏭️ END TURN", use_container_width=True, type="primary"): end_turn(); st.rerun()
         
         if st.session_state.selected_attacker:
@@ -607,7 +607,6 @@ else:
             else:
                 st.error("Taunt blocks Leader!")
                 
-        # Mini Battle Log
         with st.expander("📜 Battle Log", expanded=False):
             for log in st.session_state.battle_log: 
                 st.markdown(f"<div style='font-size:12px; margin-bottom:4px; padding:4px; background:rgba(255,255,255,0.05); border-left: 2px solid #666;'>{log}</div>", unsafe_allow_html=True)
