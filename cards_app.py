@@ -13,7 +13,7 @@ st.set_page_config(page_title="AI Card Battler", layout="wide", initial_sidebar_
 # --- Base64 URL Decoders ---
 def get_url_jsonbin(): return base64.b64decode("aHR0cHM6Ly9hcGkuanNvbmJpbi5pby92My9iLw==").decode("utf-8")
 def get_url_placeholder(): return base64.b64decode("aHR0cHM6Ly9wbGFjZWhvbGQuY28vMjU2eDM4NC8yYjJiMzYvODg4ODg4LnBuZz90ZXh0PQ==").decode("utf-8")
-def get_url_hf(): return base64.b64decode("aHR0cHM6Ly9yb3V0ZXIuaHVnZ2luZ2ZhY2UuY28vaGYtaW5mZXJlbmNlL/1vZGVscy9ibGFjay1mb3Jlc3QtbGFicy9GTFVYLjEtc2NobmVsbA==").decode("utf-8")
+def get_url_hf(): return base64.b64decode("aHR0cHM6Ly9yb3V0ZXIuaHVnZ2luZ2ZhY2UuY28vaGYtaW5mZXJlbmNlL21vZGVscy9ibGFjay1mb3Jlc3QtbGFicy9GTFVYLjEtc2NobmVsbA==").decode("utf-8")
 
 # --- Cloud Repository System ---
 def load_repository():
@@ -104,7 +104,7 @@ state_defaults = {
     'theme': "", 'deck': [], 'hand': [], 'board': [],
     'enemy_deck': [], 'enemy_hand': [], 'enemy_board': [],
     'player_hp': 30, 'enemy_hp': 30,
-    'max_ap': 3, 'current_ap': 3, 
+    'max_ap': 3, 'current_ap': 3,
     'active_stage': None, 'lore': "",
     'turn_count': 1, 'battle_log': [],
     'selected_attacker': None, 'selected_buff': None, 
@@ -211,23 +211,22 @@ def setup_game(theme):
             new_card['rarity'] = card.get('rarity', 'Common')
             new_card['desc'] = card.get('desc', 'A combatant enters the fray.')
             
-            # --- AI SANITIZER ---
-            # If the LLM generates a string instead of a dict/array, this safely converts it so the app won't crash
+            # --- STRICT AI SANITIZER ---
             mechs = card.get('mechanics', [])
             new_card['mechanics'] = mechs if isinstance(mechs, list) else [str(mechs)] if mechs else []
             
             ab = card.get('ability', {})
-            if ab and not isinstance(ab, dict):
-                new_card['ability'] = {'name': 'Ability', 'desc': str(ab)}
+            if not isinstance(ab, dict):
+                new_card['ability'] = {'name': 'Ability', 'desc': str(ab) if ab else ''}
             else:
                 new_card['ability'] = ab
                 
             mods = card.get('stat_modifier', {})
-            if mods and not isinstance(mods, dict):
+            if not isinstance(mods, dict):
                 new_card['stat_modifier'] = {'atk': 1, 'def': 1}
             else:
                 new_card['stat_modifier'] = mods
-            # ---------------------
+            # ---------------------------
             
             new_card['ability_used'] = False
             new_card['is_dead'] = False
@@ -280,7 +279,7 @@ def play_card(card_id, is_player=True):
     if card_idx is None: return
 
     card = hand.pop(card_idx)
-    card['sick'] = True 
+    card['sick'] = True
     board.append(card)
     
     if is_player: st.session_state.current_ap -= 1
@@ -295,12 +294,18 @@ def apply_buff(buff_id, target_id):
     if not buff_card or not target_card: return
     
     st.session_state.current_ap -= 1
+    
+    # Absolute safe extraction
     mods = buff_card.get('stat_modifier', {})
+    if not isinstance(mods, dict): mods = {'atk': 1, 'def': 1}
+    
     atk_mod = mods.get('atk', 0)
     def_mod = mods.get('def', 0)
     
     target_card['atk'] = target_card.get('atk', 0) + atk_mod
     target_card['def'] = target_card.get('def', 0) + def_mod
+    
+    if 'applied_buffs' not in target_card: target_card['applied_buffs'] = []
     target_card['applied_buffs'].append(buff_card['name'])
     
     buff_card['is_consumed'] = True 
@@ -452,13 +457,11 @@ def render_card(card, location_type, is_enemy=False, is_hidden=False):
     if card.get('type') == 'Attack':
         buff_indicator = " ✨" if card.get('applied_buffs') else ""
         sick_indicator = " 💤" if card.get('sick', False) else ""
-        # UI Polish: Top Stat Badges
         html += "<div style='position:absolute; top:10px; width:100%; display:flex; justify-content:space-between; padding:0 10px; font-weight:bold; font-size:16px; text-shadow:2px 2px 4px #000; z-index: 5;'>"
         html += f"<span style='background:rgba(200,40,40,0.9); padding:2px 8px; border-radius:4px;'>⚔️ {card.get('atk', 0)}{sick_indicator}</span>"
         html += f"<span style='background:rgba(40,100,200,0.9); padding:2px 8px; border-radius:4px;'>🛡️ {card.get('def', 0)}{buff_indicator}</span>"
         html += "</div>"
     
-    # UI Polish: Type Overlay Pill
     html += "<div style='position:absolute; bottom:32px; width:100%; text-align:center; z-index: 5;'>"
     html += f"<span style='background:rgba(0,0,0,0.8); padding:2px 10px; border-radius:10px; font-size:10px; font-weight:bold; text-transform:uppercase; letter-spacing:1px; border:1px solid #555;'>{card.get('type', 'Unknown')}</span>"
     html += "</div>"
@@ -478,15 +481,18 @@ def render_card(card, location_type, is_enemy=False, is_hidden=False):
         html += f"<div style='margin-top: 10px; font-size: 11px; color: #4a8cff; background:rgba(74,140,255,0.1); padding: 5px; border-radius: 4px;'><b>✨ Buffs:</b><br>{', '.join(card['applied_buffs'])}</div>"
     html += "</div>"
     
+    # Safe Ability Render
     if 'ability' in card:
         ab = card['ability']
+        if not isinstance(ab, dict): ab = {'name': 'Ability', 'desc': str(ab)}
         html += f"<div style='margin:0 10px 10px 10px; background:rgba(255,255,255,0.1); padding:8px; border-radius:6px; font-size:11px;'><b style='color:#ffeb3b;'>⚡ {ab.get('name','Ability')}</b><br>{ab.get('desc','')}</div>"
     
-    # UI Polish: Footer Stats Block
+    # Safe Bottom Stats Render
     if card.get('type') == 'Attack':
         html += f"<div style='padding:10px; display:flex; justify-content:space-between; font-weight:bold; font-size:16px; border-top:1px solid #555; background:rgba(0,0,0,0.4); margin-top:auto;'><span>⚔️ {card.get('atk', 0)}</span><span>🛡️ {card.get('def', 0)}</span></div>"
     elif card.get('type') == 'Buff':
         mods = card.get('stat_modifier', {})
+        if not isinstance(mods, dict): mods = {'atk': 1, 'def': 1}
         html += f"<div style='padding:10px; font-weight:bold; font-size:14px; border-top:1px solid #555; background:rgba(0,0,0,0.4); text-align:center; margin-top:auto;'>Buff: +{mods.get('atk',0)} ATK / +{mods.get('def',0)} DEF</div>"
 
     html += "</div></div></label></div>"
@@ -524,17 +530,12 @@ def render_card(card, location_type, is_enemy=False, is_hidden=False):
                     btn_text = "💤 Sick" if card.get('sick') else "⚔️ Attack (1 AP)"
                     if st.button(btn_text, key=f"atk_{card_key}", type="primary", disabled=not can_attack):
                         st.session_state.selected_attacker = card['id']; st.rerun()
-                
-                if 'ability' in card and not card.get('ability_used', False):
-                    if st.button("⚡ Ability", key=f"ab_{card_key}"):
-                        trigger_ability(card['id']); st.rerun()
 
         elif is_enemy and location_type == 'eboard' and st.session_state.selected_attacker and is_valid_enemy_target:
             if st.button("🎯 Strike", key=f"tgt_{card_key}", type="primary"):
                 resolve_attack(st.session_state.selected_attacker, card['id'])
                 st.session_state.selected_attacker = None; st.rerun()
 
-        # Paint Art Button
         if not card.get('has_ai_art', False):
             if st.button("🎨 Paint Art", key=f"paint_{card_key}"):
                 with st.spinner(f"Painting {card['name']}..."):
