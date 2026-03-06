@@ -6,6 +6,7 @@ import urllib.parse
 import textwrap
 import base64
 import requests 
+import time
 
 # --- Page Config ---
 st.set_page_config(page_title="AI Card Battler", layout="wide", initial_sidebar_state="collapsed")
@@ -53,6 +54,31 @@ def sync_art_across_game(card_name, image_data):
             if c['name'] == card_name:
                 c['image'] = image_data
                 c['has_ai_art'] = True
+
+# --- NEW: Automated Just-In-Time Rendering Engine ---
+def ensure_card_art(card, theme):
+    """Automatically fetches, saves, and syncs card art with a built-in retry for waking models."""
+    if card.get('has_ai_art', False): return
+    
+    # Fast-check the database just in case it was painted in the background
+    db = load_repository()
+    if card['name'] in db:
+        card['image'] = db[card['name']]
+        card['has_ai_art'] = True
+        return
+        
+    for attempt in range(2):
+        new_img, error_msg = fetch_ai_image(card['name'], card.get('type', 'Attack'), theme)
+        if new_img:
+            card['image'] = new_img
+            card['has_ai_art'] = True
+            save_to_repository(card['name'], new_img)
+            sync_art_across_game(card['name'], new_img)
+            return
+        elif "waking up" in error_msg and attempt == 0:
+            time.sleep(5) # Give Hugging Face 5 seconds to wake up, then try once more
+        else:
+            break # Fails gracefully, leaves the placeholder intact
 
 # --- Global CSS ---
 st.markdown("""
@@ -105,7 +131,7 @@ state_defaults = {
     'theme': "", 'deck': [], 'hand': [], 'board': [],
     'enemy_deck': [], 'enemy_hand': [], 'enemy_board': [],
     'player_hp': 30, 'enemy_hp': 30,
-    'max_ap': 3, 'current_ap': 3,
+    'max_ap': 3, 'current_ap': 3, 
     'active_stage': None, 'lore': "",
     'turn_count': 1, 'battle_log': [],
     'selected_attacker': None, 'selected_buff': None, 
@@ -190,7 +216,7 @@ def fetch_ai_image(card_name: str, card_type: str, theme: str):
             b64 = base64.b64encode(response.content).decode('utf-8')
             return f"data:image/jpeg;base64,{b64}", None
         elif response.status_code == 503:
-            return None, "Model is waking up! Please try again in 10 seconds."
+            return None, "Model is waking up"
         else:
             return None, f"HF API Error {response.status_code}"
     except Exception as e:
@@ -225,8 +251,7 @@ def setup_game(theme):
             else: new_card['stat_modifier'] = mods
             
             card_type = card.get('type', 'Attack')
-            if card_type not in ['Attack', 'Buff']:
-                card_type = 'Attack' if 'atk' in card else 'Buff'
+            if card_type not in ['Attack', 'Buff']: card_type = 'Attack' if 'atk' in card else 'Buff'
             new_card['type'] = card_type
             
             new_card['ability_used'] = False
@@ -264,6 +289,11 @@ def setup_game(theme):
     st.session_state.game_active = True
     st.session_state.game_over = False
 
+    # AUTOMATION 1: JIT Render Starting Hand
+    with st.spinner("Painting your starting hand..."):
+        for card in st.session_state.hand:
+            ensure_card_art(card, theme)
+
 def play_card(card_id, is_player=True):
     if is_player and st.session_state.current_ap < 1: 
         st.warning("Not enough AP to deploy!"); return
@@ -273,7 +303,6 @@ def play_card(card_id, is_player=True):
         st.warning("Board is full! Max 5 units."); return
 
     cleanup_dead_cards()
-    
     hand = list(st.session_state.hand if is_player else st.session_state.enemy_hand)
     deck = list(st.session_state.deck if is_player else st.session_state.enemy_deck)
     board = list(st.session_state.board if is_player else st.session_state.enemy_board)
@@ -285,7 +314,13 @@ def play_card(card_id, is_player=True):
     card['sick'] = True
     board.append(card)
     
-    if deck: hand.append(deck.pop())
+    # AUTOMATION 2: JIT Render Drawn Cards
+    if deck: 
+        drawn_card = deck.pop()
+        if is_player and not drawn_card['has_ai_art']:
+            with st.spinner(f"Drawing and Painting: {drawn_card['name']}..."):
+                ensure_card_art(drawn_card, st.session_state.theme)
+        hand.append(drawn_card)
     
     if is_player:
         st.session_state.hand = hand
@@ -307,13 +342,11 @@ def apply_buff(buff_id, target_id):
     if not buff_card or not target_card: return
     
     st.session_state.current_ap -= 1
-    
     mods = buff_card.get('stat_modifier', {})
     if not isinstance(mods, dict): mods = {'atk': 1, 'def': 1}
     
     atk_mod = mods.get('atk', 0)
     def_mod = mods.get('def', 0)
-    
     target_card['atk'] = target_card.get('atk', 0) + atk_mod
     target_card['def'] = target_card.get('def', 0) + def_mod
     
@@ -329,12 +362,18 @@ def apply_buff(buff_id, target_id):
     st.session_state.animation_state = {'type': 'buff', 'target_id': target_card['id']}
     
     st.session_state.board = list(st.session_state.board)
-    st.session_state.hand = list(st.session_state.hand)
-    if st.session_state.deck: st.session_state.hand.append(st.session_state.deck.pop())
+    hand = list(st.session_state.hand)
+    
+    # AUTOMATION 2: JIT Render Drawn Cards (after buff cast)
+    if st.session_state.deck: 
+        drawn_card = st.session_state.deck.pop()
+        if not drawn_card['has_ai_art']:
+            with st.spinner(f"Drawing and Painting: {drawn_card['name']}..."):
+                ensure_card_art(drawn_card, st.session_state.theme)
+        hand.append(drawn_card)
+    st.session_state.hand = hand
 
-# --- THE MISSING FUNCTION RESTORED ---
 def trigger_ability(card_id):
-    """Triggers the card's special ability."""
     if st.session_state.current_ap < 1: return
     cleanup_dead_cards()
     card = next((c for c in st.session_state.board if c['id'] == card_id), None)
@@ -347,14 +386,12 @@ def trigger_ability(card_id):
     if not isinstance(ab, dict): ab = {'name': 'Ability', 'desc': str(ab)}
     ab_name = ab.get('name', 'Ability')
     
-    # Simple hardcoded baseline effect (can be upgraded later)
     st.session_state.enemy_hp -= 2
     log_event(f"⚡ {card['name']} cast {ab_name}! (2 DMG to Leader)")
     
     st.session_state.animation_state = {'type': 'combat', 'attacker_id': card['id']}
     st.session_state.board = list(st.session_state.board)
     check_win_condition()
-# --------------------------------------
 
 def has_taunt(board):
     return any("Taunt" in c.get('mechanics', []) for c in board if not c.get('is_dead'))
@@ -422,6 +459,10 @@ def execute_enemy_turn():
     if st.session_state.enemy_hand and len(st.session_state.enemy_board) < 5:
         for c in st.session_state.enemy_hand:
             if c.get('type') == 'Attack':
+                # AUTOMATION 3: JIT Render Enemy Played Cards
+                if not c['has_ai_art']:
+                    with st.spinner(f"Enemy deploying {c['name']}..."):
+                        ensure_card_art(c, st.session_state.theme)
                 play_card(c['id'], is_player=False)
                 break
 
@@ -585,7 +626,6 @@ def render_card(card, location_type, is_enemy=False, is_hidden=False):
                     if st.button(btn_text, key=f"atk_{card_key}", type="primary", disabled=not can_attack):
                         st.session_state.selected_attacker = card['id']; st.rerun()
                 
-                # BUG FIX: Ensure the Ability Button uses AP appropriately
                 if 'ability' in card and not card.get('ability_used', False):
                     if st.button("⚡ Ability (1 AP)", key=f"ab_{card_key}", disabled=not has_ap):
                         trigger_ability(card['id']); st.rerun()
@@ -594,16 +634,6 @@ def render_card(card, location_type, is_enemy=False, is_hidden=False):
             if st.button("🎯 Strike", key=f"tgt_{card_key}", type="primary"):
                 resolve_attack(st.session_state.selected_attacker, card['id'])
                 st.session_state.selected_attacker = None; st.rerun()
-
-        if not card.get('has_ai_art', False):
-            if st.button("🎨 Paint Art", key=f"paint_{card_key}"):
-                with st.spinner(f"Painting {card['name']}..."):
-                    new_img, error_msg = fetch_ai_image(card['name'], card.get('type', 'Attack'), st.session_state.theme)
-                    if new_img:
-                        save_to_repository(card['name'], new_img)
-                        sync_art_across_game(card['name'], new_img)
-                        st.rerun()
-                    else: st.error(f"Failed: {error_msg}")
 
 def render_empty_slot():
     st.markdown("<div class='empty-slot'>Empty Slot</div>", unsafe_allow_html=True)
