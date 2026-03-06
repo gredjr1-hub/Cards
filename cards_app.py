@@ -88,10 +88,12 @@ st.markdown("""
 @keyframes pulseTarget { 0% { transform: scale(1); filter: brightness(1); } 50% { transform: scale(1.02); filter: brightness(1.3); } 100% { transform: scale(1); filter: brightness(1); } }
 @keyframes lungeUp { 0% { transform: translateY(0); } 50% { transform: translateY(-40px) scale(1.1); z-index: 50;} 100% { transform: translateY(0); } }
 @keyframes shakeDamage { 0% { transform: translateX(0); filter: brightness(1); } 20% { transform: translateX(-15px) rotate(-5deg); filter: brightness(2) hue-rotate(-50deg); } 40% { transform: translateX(15px) rotate(5deg); } 60% { transform: translateX(-15px) rotate(-5deg); } 80% { transform: translateX(15px) rotate(5deg); } 100% { transform: translateX(0); filter: brightness(1); } }
-@keyframes pulseBuff { 0% { transform: scale(1); } 50% { transform: scale(1.1); filter: drop-shadow(0 0 20px #00ff00) brightness(1.5); } 100% { transform: scale(1); } }
-.anim-attack .flip-card-inner { animation: lungeUp 0.5s ease forwards; }
-.anim-damage .flip-card-inner { animation: shakeDamage 0.5s ease forwards; }
-.anim-buff .flip-card-inner { animation: pulseBuff 0.6s ease forwards; }
+@keyframes pulseBuff { 0% { transform: scale(1); } 50% { transform: scale(1.05); filter: drop-shadow(0 0 20px #00ff00) brightness(1.5); } 100% { transform: scale(1); } }
+
+/* BUG FIX: Removed 'forwards' from animations so they don't lock the CSS transform and break the flip! */
+.anim-attack .flip-card-inner { animation: lungeUp 0.5s ease; }
+.anim-damage .flip-card-inner { animation: shakeDamage 0.5s ease; }
+.anim-buff .flip-card-inner { animation: pulseBuff 0.6s ease; }
 
 .stButton button { width: 100%; border-radius: 8px; font-weight: bold; margin-top: 5px; text-transform: uppercase; letter-spacing: 1px;}
 .ap-cost { background: #4a8cff; color: white; border-radius: 50%; width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center; position: absolute; top: -10px; left: -10px; font-weight: bold; box-shadow: 0 2px 5px rgba(0,0,0,0.5); z-index: 20;}
@@ -212,7 +214,6 @@ def setup_game(theme):
             new_card['rarity'] = card.get('rarity', 'Common')
             new_card['desc'] = card.get('desc', 'A combatant enters the fray.')
             
-            # --- AI SANITIZER (Ensures proper formatting) ---
             mechs = card.get('mechanics', [])
             new_card['mechanics'] = mechs if isinstance(mechs, list) else [str(mechs)] if mechs else []
             
@@ -224,12 +225,10 @@ def setup_game(theme):
             if not isinstance(mods, dict): new_card['stat_modifier'] = {'atk': 1, 'def': 1}
             else: new_card['stat_modifier'] = mods
             
-            # CRITICAL TYPE CHECK: Prevents invisible cards
             card_type = card.get('type', 'Attack')
             if card_type not in ['Attack', 'Buff']:
                 card_type = 'Attack' if 'atk' in card else 'Buff'
             new_card['type'] = card_type
-            # ------------------------------------------------
             
             new_card['ability_used'] = False
             new_card['is_dead'] = False
@@ -267,7 +266,6 @@ def setup_game(theme):
     st.session_state.game_over = False
 
 def play_card(card_id, is_player=True):
-    """Summons a card and explicitly reassigns state to force a UI rerender."""
     if is_player and st.session_state.current_ap < 1: 
         st.warning("Not enough AP to deploy!"); return
         
@@ -277,7 +275,6 @@ def play_card(card_id, is_player=True):
 
     cleanup_dead_cards()
     
-    # Use physical copies to ensure Streamlit tracks the mutation
     hand = list(st.session_state.hand if is_player else st.session_state.enemy_hand)
     deck = list(st.session_state.deck if is_player else st.session_state.enemy_deck)
     board = list(st.session_state.board if is_player else st.session_state.enemy_board)
@@ -291,7 +288,6 @@ def play_card(card_id, is_player=True):
     
     if deck: hand.append(deck.pop())
     
-    # EXPLICIT REASSIGNMENT: Fixes the bug where played cards don't display
     if is_player:
         st.session_state.hand = hand
         st.session_state.board = board
@@ -322,14 +318,18 @@ def apply_buff(buff_id, target_id):
     target_card['atk'] = target_card.get('atk', 0) + atk_mod
     target_card['def'] = target_card.get('def', 0) + def_mod
     
+    # BUG FIX: Formats the specific numbers into the buff string!
+    atk_str = f"+{atk_mod}" if atk_mod >= 0 else f"{atk_mod}"
+    def_str = f"+{def_mod}" if def_mod >= 0 else f"{def_mod}"
+    buff_label = f"{buff_card['name']} ({atk_str} ATK, {def_str} DEF)"
+    
     if 'applied_buffs' not in target_card: target_card['applied_buffs'] = []
-    target_card['applied_buffs'].append(buff_card['name'])
+    target_card['applied_buffs'].append(buff_label)
     
     buff_card['is_consumed'] = True 
-    log_event(f"✨ Applied {buff_card['name']} to {target_card['name']} (+{atk_mod} ATK, +{def_mod} DEF)!")
+    log_event(f"✨ Applied {buff_card['name']} to {target_card['name']} ({atk_str} ATK, {def_str} DEF)!")
     st.session_state.animation_state = {'type': 'buff', 'target_id': target_card['id']}
     
-    # Explicit Sync
     st.session_state.board = list(st.session_state.board)
     st.session_state.hand = list(st.session_state.hand)
     if st.session_state.deck: st.session_state.hand.append(st.session_state.deck.pop())
@@ -359,11 +359,14 @@ def resolve_attack(attacker_id, target_id):
     st.session_state.attacks_used.add(attacker.get('id'))
     st.session_state.animation_state = {'type': 'combat', 'attacker_id': attacker['id'], 'target_id': target['id']}
 
+    # BUG FIX: Instantly scrub dead cards from the board array
     if target['def'] <= 0:
         log_event(f"💀 {target['name']} was destroyed!")
         target['is_dead'] = True 
+        st.session_state.enemy_board = [c for c in st.session_state.enemy_board if c['id'] != target['id']]
+    else:
+        st.session_state.enemy_board = list(st.session_state.enemy_board)
         
-    st.session_state.enemy_board = list(st.session_state.enemy_board)
     check_win_condition()
 
 def resolve_direct_attack(attacker_id):
@@ -412,9 +415,12 @@ def execute_enemy_turn():
             if target:
                 target['def'] = int(target.get('def', 0)) - atk
                 log_event(f"⚔️ Enemy {enemy_card['name']} hit {target['name']} for {atk} DMG!")
+                
+                # BUG FIX: Instantly scrub dead cards from the player's board
                 if target['def'] <= 0:
                     log_event(f"💀 Your {target['name']} was destroyed!")
                     target['is_dead'] = True
+                    st.session_state.board = [c for c in st.session_state.board if c['id'] != target['id']]
             else:
                 st.session_state.player_hp -= atk
                 log_event(f"💥 Enemy {enemy_card['name']} hit YOU for {atk} DMG!")
@@ -463,8 +469,6 @@ def render_card(card, location_type, is_enemy=False, is_hidden=False):
     if anim_state.get('attacker_id') == card['id']: wrapper_classes.append("anim-attack")
     if anim_state.get('target_id') == card['id']: 
         wrapper_classes.append("anim-buff" if anim_state.get('type') == 'buff' else "anim-damage")
-    if card.get('is_dead'): wrapper_classes.append("anim-death")
-    if card.get('is_consumed'): wrapper_classes.append("anim-consume")
 
     ap_badge = "<div class='ap-cost'>1</div>" if location_type == 'hand' and not is_enemy else ""
 
@@ -478,7 +482,6 @@ def render_card(card, location_type, is_enemy=False, is_hidden=False):
     html += ap_badge
     html += f"<img src='{card.get('image', '')}' style='width:100%; height:100%; object-fit:cover; opacity:0.9; background-color: #2b2b36;'>"
     
-    # NEW UI FIX: Unified Top Bar (Stats + Type nestled together)
     html += "<div style='position:absolute; top:10px; width:100%; display:flex; justify-content:space-between; align-items:flex-start; padding:0 10px; font-weight:bold; font-size:16px; text-shadow:2px 2px 4px #000; z-index: 5;'>"
     
     if card.get('type') == 'Attack':
@@ -509,7 +512,7 @@ def render_card(card, location_type, is_enemy=False, is_hidden=False):
         html += f"<div style='font-size:11px; font-weight:bold; color:#ffeb3b; margin-bottom:5px;'>Keywords: {', '.join(card['mechanics'])}</div>"
     html += f"<p style='margin:0; font-size:12px; font-style:italic; color:#ddd;'>\"{card.get('desc', '')}\"</p>"
     if card.get('applied_buffs'):
-        html += f"<div style='margin-top: 10px; font-size: 11px; color: #4a8cff; background:rgba(74,140,255,0.1); padding: 5px; border-radius: 4px;'><b>✨ Buffs:</b><br>{', '.join(card['applied_buffs'])}</div>"
+        html += f"<div style='margin-top: 10px; font-size: 11px; color: #4a8cff; background:rgba(74,140,255,0.1); padding: 5px; border-radius: 4px;'><b>✨ Buffs:</b><br>{'<br>'.join(card['applied_buffs'])}</div>"
     html += "</div>"
     
     if 'ability' in card:
@@ -517,7 +520,6 @@ def render_card(card, location_type, is_enemy=False, is_hidden=False):
         if not isinstance(ab, dict): ab = {'name': 'Ability', 'desc': str(ab)}
         html += f"<div style='margin:0 10px 10px 10px; background:rgba(255,255,255,0.1); padding:8px; border-radius:6px; font-size:11px;'><b style='color:#ffeb3b;'>⚡ {ab.get('name','Ability')}</b><br>{ab.get('desc','')}</div>"
     
-    # Safe Bottom Stats Render
     if card.get('type') == 'Attack':
         html += f"<div style='padding:10px; display:flex; justify-content:space-between; font-weight:bold; font-size:16px; border-top:1px solid #555; background:rgba(0,0,0,0.4); margin-top:auto;'><span>⚔️ {card.get('atk', 0)}</span><span>🛡️ {card.get('def', 0)}</span></div>"
     elif card.get('type') == 'Buff':
@@ -529,56 +531,57 @@ def render_card(card, location_type, is_enemy=False, is_hidden=False):
     st.markdown(html, unsafe_allow_html=True)
 
     # --- Interaction Buttons ---
-    is_disabled = card.get('is_dead', False) or card.get('is_consumed', False)
     has_ap = st.session_state.current_ap > 0
     
-    if not is_disabled:
-        if not is_enemy and location_type == 'hand':
-            if card.get('type') == 'Attack':
-                if st.button("Summon (1 AP)", key=f"play_{card_key}", type="primary", disabled=not has_ap):
-                    play_card(card['id'], is_player=True); st.rerun()
-            elif card.get('type') == 'Buff':
-                if is_selected_buff:
-                    if st.button("Cancel", key=f"cancel_{card_key}"):
-                        st.session_state.selected_buff = None; st.rerun()
-                else:
-                    if st.button("Cast Spell (1 AP)", key=f"use_{card_key}", type="primary", disabled=not has_ap):
-                        st.session_state.selected_buff = card['id']
-                        st.session_state.selected_attacker = None; st.rerun()
-                
-                # Instruction helper for casting
-                if is_selected_buff:
-                    st.info("⬆️ Select board target")
-
-        elif not is_enemy and location_type == 'board':
-            if is_targetable_friendly:
-                if st.button("Apply Here", key=f"apply_{card_key}", type="primary"):
-                    apply_buff(st.session_state.selected_buff, card['id'])
+    if not is_enemy and location_type == 'hand':
+        if card.get('type') == 'Attack':
+            if st.button("Summon (1 AP)", key=f"play_{card_key}", type="primary", disabled=not has_ap):
+                play_card(card['id'], is_player=True); st.rerun()
+        elif card.get('type') == 'Buff':
+            if is_selected_buff:
+                if st.button("Cancel", key=f"cancel_{card_key}"):
                     st.session_state.selected_buff = None; st.rerun()
-            elif card.get('type') == 'Attack':
-                can_attack = card.get('id') not in st.session_state.attacks_used and not card.get('sick', False) and has_ap
-                if is_selected_attacker:
-                    if st.button("Cancel", key=f"cancel_atk_{card_key}"):
-                        st.session_state.selected_attacker = None; st.rerun()
-                else:
-                    btn_text = "💤 Sick" if card.get('sick') else "⚔️ Attack (1 AP)"
-                    if st.button(btn_text, key=f"atk_{card_key}", type="primary", disabled=not can_attack):
-                        st.session_state.selected_attacker = card['id']; st.rerun()
+            else:
+                if st.button("Cast Spell (1 AP)", key=f"use_{card_key}", type="primary", disabled=not has_ap):
+                    st.session_state.selected_buff = card['id']
+                    st.session_state.selected_attacker = None; st.rerun()
+            
+            if is_selected_buff:
+                st.info("⬆️ Select board target")
 
-        elif is_enemy and location_type == 'eboard' and st.session_state.selected_attacker and is_valid_enemy_target:
-            if st.button("🎯 Strike", key=f"tgt_{card_key}", type="primary"):
-                resolve_attack(st.session_state.selected_attacker, card['id'])
-                st.session_state.selected_attacker = None; st.rerun()
+    elif not is_enemy and location_type == 'board':
+        if is_targetable_friendly:
+            if st.button("Apply Here", key=f"apply_{card_key}", type="primary"):
+                apply_buff(st.session_state.selected_buff, card['id'])
+                st.session_state.selected_buff = None; st.rerun()
+        elif card.get('type') == 'Attack':
+            can_attack = card.get('id') not in st.session_state.attacks_used and not card.get('sick', False) and has_ap
+            if is_selected_attacker:
+                if st.button("Cancel", key=f"cancel_atk_{card_key}"):
+                    st.session_state.selected_attacker = None; st.rerun()
+            else:
+                btn_text = "💤 Sick" if card.get('sick') else "⚔️ Attack (1 AP)"
+                if st.button(btn_text, key=f"atk_{card_key}", type="primary", disabled=not can_attack):
+                    st.session_state.selected_attacker = card['id']; st.rerun()
+            
+            if 'ability' in card and not card.get('ability_used', False):
+                if st.button("⚡ Ability", key=f"ab_{card_key}"):
+                    trigger_ability(card['id']); st.rerun()
 
-        if not card.get('has_ai_art', False):
-            if st.button("🎨 Paint Art", key=f"paint_{card_key}"):
-                with st.spinner(f"Painting {card['name']}..."):
-                    new_img, error_msg = fetch_ai_image(card['name'], card.get('type', 'Attack'), st.session_state.theme)
-                    if new_img:
-                        save_to_repository(card['name'], new_img)
-                        sync_art_across_game(card['name'], new_img)
-                        st.rerun()
-                    else: st.error(f"Failed: {error_msg}")
+    elif is_enemy and location_type == 'eboard' and st.session_state.selected_attacker and is_valid_enemy_target:
+        if st.button("🎯 Strike", key=f"tgt_{card_key}", type="primary"):
+            resolve_attack(st.session_state.selected_attacker, card['id'])
+            st.session_state.selected_attacker = None; st.rerun()
+
+    if not card.get('has_ai_art', False):
+        if st.button("🎨 Paint Art", key=f"paint_{card_key}"):
+            with st.spinner(f"Painting {card['name']}..."):
+                new_img, error_msg = fetch_ai_image(card['name'], card.get('type', 'Attack'), st.session_state.theme)
+                if new_img:
+                    save_to_repository(card['name'], new_img)
+                    sync_art_across_game(card['name'], new_img)
+                    st.rerun()
+                else: st.error(f"Failed: {error_msg}")
 
 def render_empty_slot():
     st.markdown("<div class='empty-slot'>Empty Slot</div>", unsafe_allow_html=True)
