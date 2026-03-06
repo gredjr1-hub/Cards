@@ -54,7 +54,7 @@ def sync_art_across_game(card_name, image_data):
                 c['image'] = image_data
                 c['has_ai_art'] = True
 
-# --- Global CSS (Playmat Overhaul) ---
+# --- Global CSS ---
 st.markdown("""
 <style>
 /* Playmat & HUD Styling */
@@ -88,9 +88,8 @@ st.markdown("""
 @keyframes pulseTarget { 0% { transform: scale(1); filter: brightness(1); } 50% { transform: scale(1.02); filter: brightness(1.3); } 100% { transform: scale(1); filter: brightness(1); } }
 @keyframes lungeUp { 0% { transform: translateY(0); } 50% { transform: translateY(-40px) scale(1.1); z-index: 50;} 100% { transform: translateY(0); } }
 @keyframes shakeDamage { 0% { transform: translateX(0); filter: brightness(1); } 20% { transform: translateX(-15px) rotate(-5deg); filter: brightness(2) hue-rotate(-50deg); } 40% { transform: translateX(15px) rotate(5deg); } 60% { transform: translateX(-15px) rotate(-5deg); } 80% { transform: translateX(15px) rotate(5deg); } 100% { transform: translateX(0); filter: brightness(1); } }
-@keyframes pulseBuff { 0% { transform: scale(1); } 50% { transform: scale(1.05); filter: drop-shadow(0 0 20px #00ff00) brightness(1.5); } 100% { transform: scale(1); } }
+@keyframes pulseBuff { 0% { transform: scale(1); } 50% { transform: scale(1.1); filter: drop-shadow(0 0 20px #00ff00) brightness(1.5); } 100% { transform: scale(1); } }
 
-/* BUG FIX: Removed 'forwards' from animations so they don't lock the CSS transform and break the flip! */
 .anim-attack .flip-card-inner { animation: lungeUp 0.5s ease; }
 .anim-damage .flip-card-inner { animation: shakeDamage 0.5s ease; }
 .anim-buff .flip-card-inner { animation: pulseBuff 0.6s ease; }
@@ -106,7 +105,7 @@ state_defaults = {
     'theme': "", 'deck': [], 'hand': [], 'board': [],
     'enemy_deck': [], 'enemy_hand': [], 'enemy_board': [],
     'player_hp': 30, 'enemy_hp': 30,
-    'max_ap': 3, 'current_ap': 3, 
+    'max_ap': 3, 'current_ap': 3,
     'active_stage': None, 'lore': "",
     'turn_count': 1, 'battle_log': [],
     'selected_attacker': None, 'selected_buff': None, 
@@ -318,7 +317,6 @@ def apply_buff(buff_id, target_id):
     target_card['atk'] = target_card.get('atk', 0) + atk_mod
     target_card['def'] = target_card.get('def', 0) + def_mod
     
-    # BUG FIX: Formats the specific numbers into the buff string!
     atk_str = f"+{atk_mod}" if atk_mod >= 0 else f"{atk_mod}"
     def_str = f"+{def_mod}" if def_mod >= 0 else f"{def_mod}"
     buff_label = f"{buff_card['name']} ({atk_str} ATK, {def_str} DEF)"
@@ -333,6 +331,30 @@ def apply_buff(buff_id, target_id):
     st.session_state.board = list(st.session_state.board)
     st.session_state.hand = list(st.session_state.hand)
     if st.session_state.deck: st.session_state.hand.append(st.session_state.deck.pop())
+
+# --- THE MISSING FUNCTION RESTORED ---
+def trigger_ability(card_id):
+    """Triggers the card's special ability."""
+    if st.session_state.current_ap < 1: return
+    cleanup_dead_cards()
+    card = next((c for c in st.session_state.board if c['id'] == card_id), None)
+    if not card: return
+    
+    st.session_state.current_ap -= 1
+    card['ability_used'] = True
+    
+    ab = card.get('ability', {})
+    if not isinstance(ab, dict): ab = {'name': 'Ability', 'desc': str(ab)}
+    ab_name = ab.get('name', 'Ability')
+    
+    # Simple hardcoded baseline effect (can be upgraded later)
+    st.session_state.enemy_hp -= 2
+    log_event(f"⚡ {card['name']} cast {ab_name}! (2 DMG to Leader)")
+    
+    st.session_state.animation_state = {'type': 'combat', 'attacker_id': card['id']}
+    st.session_state.board = list(st.session_state.board)
+    check_win_condition()
+# --------------------------------------
 
 def has_taunt(board):
     return any("Taunt" in c.get('mechanics', []) for c in board if not c.get('is_dead'))
@@ -359,7 +381,6 @@ def resolve_attack(attacker_id, target_id):
     st.session_state.attacks_used.add(attacker.get('id'))
     st.session_state.animation_state = {'type': 'combat', 'attacker_id': attacker['id'], 'target_id': target['id']}
 
-    # BUG FIX: Instantly scrub dead cards from the board array
     if target['def'] <= 0:
         log_event(f"💀 {target['name']} was destroyed!")
         target['is_dead'] = True 
@@ -415,8 +436,6 @@ def execute_enemy_turn():
             if target:
                 target['def'] = int(target.get('def', 0)) - atk
                 log_event(f"⚔️ Enemy {enemy_card['name']} hit {target['name']} for {atk} DMG!")
-                
-                # BUG FIX: Instantly scrub dead cards from the player's board
                 if target['def'] <= 0:
                     log_event(f"💀 Your {target['name']} was destroyed!")
                     target['is_dead'] = True
@@ -531,57 +550,60 @@ def render_card(card, location_type, is_enemy=False, is_hidden=False):
     st.markdown(html, unsafe_allow_html=True)
 
     # --- Interaction Buttons ---
+    is_disabled = card.get('is_dead', False) or card.get('is_consumed', False)
     has_ap = st.session_state.current_ap > 0
     
-    if not is_enemy and location_type == 'hand':
-        if card.get('type') == 'Attack':
-            if st.button("Summon (1 AP)", key=f"play_{card_key}", type="primary", disabled=not has_ap):
-                play_card(card['id'], is_player=True); st.rerun()
-        elif card.get('type') == 'Buff':
-            if is_selected_buff:
-                if st.button("Cancel", key=f"cancel_{card_key}"):
+    if not is_disabled:
+        if not is_enemy and location_type == 'hand':
+            if card.get('type') == 'Attack':
+                if st.button("Summon (1 AP)", key=f"play_{card_key}", type="primary", disabled=not has_ap):
+                    play_card(card['id'], is_player=True); st.rerun()
+            elif card.get('type') == 'Buff':
+                if is_selected_buff:
+                    if st.button("Cancel", key=f"cancel_{card_key}"):
+                        st.session_state.selected_buff = None; st.rerun()
+                else:
+                    if st.button("Cast Spell (1 AP)", key=f"use_{card_key}", type="primary", disabled=not has_ap):
+                        st.session_state.selected_buff = card['id']
+                        st.session_state.selected_attacker = None; st.rerun()
+                
+                if is_selected_buff:
+                    st.info("⬆️ Select board target")
+
+        elif not is_enemy and location_type == 'board':
+            if is_targetable_friendly:
+                if st.button("Apply Here", key=f"apply_{card_key}", type="primary"):
+                    apply_buff(st.session_state.selected_buff, card['id'])
                     st.session_state.selected_buff = None; st.rerun()
-            else:
-                if st.button("Cast Spell (1 AP)", key=f"use_{card_key}", type="primary", disabled=not has_ap):
-                    st.session_state.selected_buff = card['id']
-                    st.session_state.selected_attacker = None; st.rerun()
-            
-            if is_selected_buff:
-                st.info("⬆️ Select board target")
+            elif card.get('type') == 'Attack':
+                can_attack = card.get('id') not in st.session_state.attacks_used and not card.get('sick', False) and has_ap
+                if is_selected_attacker:
+                    if st.button("Cancel", key=f"cancel_atk_{card_key}"):
+                        st.session_state.selected_attacker = None; st.rerun()
+                else:
+                    btn_text = "💤 Sick" if card.get('sick') else "⚔️ Attack (1 AP)"
+                    if st.button(btn_text, key=f"atk_{card_key}", type="primary", disabled=not can_attack):
+                        st.session_state.selected_attacker = card['id']; st.rerun()
+                
+                # BUG FIX: Ensure the Ability Button uses AP appropriately
+                if 'ability' in card and not card.get('ability_used', False):
+                    if st.button("⚡ Ability (1 AP)", key=f"ab_{card_key}", disabled=not has_ap):
+                        trigger_ability(card['id']); st.rerun()
 
-    elif not is_enemy and location_type == 'board':
-        if is_targetable_friendly:
-            if st.button("Apply Here", key=f"apply_{card_key}", type="primary"):
-                apply_buff(st.session_state.selected_buff, card['id'])
-                st.session_state.selected_buff = None; st.rerun()
-        elif card.get('type') == 'Attack':
-            can_attack = card.get('id') not in st.session_state.attacks_used and not card.get('sick', False) and has_ap
-            if is_selected_attacker:
-                if st.button("Cancel", key=f"cancel_atk_{card_key}"):
-                    st.session_state.selected_attacker = None; st.rerun()
-            else:
-                btn_text = "💤 Sick" if card.get('sick') else "⚔️ Attack (1 AP)"
-                if st.button(btn_text, key=f"atk_{card_key}", type="primary", disabled=not can_attack):
-                    st.session_state.selected_attacker = card['id']; st.rerun()
-            
-            if 'ability' in card and not card.get('ability_used', False):
-                if st.button("⚡ Ability", key=f"ab_{card_key}"):
-                    trigger_ability(card['id']); st.rerun()
+        elif is_enemy and location_type == 'eboard' and st.session_state.selected_attacker and is_valid_enemy_target:
+            if st.button("🎯 Strike", key=f"tgt_{card_key}", type="primary"):
+                resolve_attack(st.session_state.selected_attacker, card['id'])
+                st.session_state.selected_attacker = None; st.rerun()
 
-    elif is_enemy and location_type == 'eboard' and st.session_state.selected_attacker and is_valid_enemy_target:
-        if st.button("🎯 Strike", key=f"tgt_{card_key}", type="primary"):
-            resolve_attack(st.session_state.selected_attacker, card['id'])
-            st.session_state.selected_attacker = None; st.rerun()
-
-    if not card.get('has_ai_art', False):
-        if st.button("🎨 Paint Art", key=f"paint_{card_key}"):
-            with st.spinner(f"Painting {card['name']}..."):
-                new_img, error_msg = fetch_ai_image(card['name'], card.get('type', 'Attack'), st.session_state.theme)
-                if new_img:
-                    save_to_repository(card['name'], new_img)
-                    sync_art_across_game(card['name'], new_img)
-                    st.rerun()
-                else: st.error(f"Failed: {error_msg}")
+        if not card.get('has_ai_art', False):
+            if st.button("🎨 Paint Art", key=f"paint_{card_key}"):
+                with st.spinner(f"Painting {card['name']}..."):
+                    new_img, error_msg = fetch_ai_image(card['name'], card.get('type', 'Attack'), st.session_state.theme)
+                    if new_img:
+                        save_to_repository(card['name'], new_img)
+                        sync_art_across_game(card['name'], new_img)
+                        st.rerun()
+                    else: st.error(f"Failed: {error_msg}")
 
 def render_empty_slot():
     st.markdown("<div class='empty-slot'>Empty Slot</div>", unsafe_allow_html=True)
