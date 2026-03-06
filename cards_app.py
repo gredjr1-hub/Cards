@@ -13,7 +13,6 @@ st.set_page_config(page_title="AI Card Battler", layout="wide", initial_sidebar_
 # --- Base64 URL Decoders (Bypasses UI formatting bugs) ---
 def get_url_jsonbin(): return base64.b64decode("aHR0cHM6Ly9hcGkuanNvbmJpbi5pby92My9iLw==").decode("utf-8")
 def get_url_placeholder(): return base64.b64decode("aHR0cHM6Ly9wbGFjZWhvbGQuY28vMjU2eDM4NC8yYjJiMzYvODg4ODg4LnBuZz90ZXh0PQ==").decode("utf-8")
-# CRITICAL FIX: Updated to the new Hugging Face Router API endpoint!
 def get_url_hf(): return base64.b64decode("aHR0cHM6Ly9yb3V0ZXIuaHVnZ2luZ2ZhY2UuY28vaGYtaW5mZXJlbmNlL21vZGVscy9ibGFjay1mb3Jlc3QtbGFicy9GTFVYLjEtc2NobmVsbA==").decode("utf-8")
 
 # --- Cloud Repository System (JSONBin) ---
@@ -74,10 +73,12 @@ st.markdown("""
 .is-selected .flip-card-inner { box-shadow: 0 0 0 4px rgba(74,140,255,0.5), 0 0 20px rgba(74,140,255,0.6); }
 @keyframes lungeUp { 0% { transform: translateY(0); } 50% { transform: translateY(-30px) scale(1.05); } 100% { transform: translateY(0); } }
 @keyframes shakeDamage { 0% { transform: translateX(0); filter: brightness(1); } 20% { transform: translateX(-10px); filter: brightness(2) hue-rotate(-50deg); } 40% { transform: translateX(10px); } 60% { transform: translateX(-10px); } 80% { transform: translateX(10px); } 100% { transform: translateX(0); filter: brightness(1); } }
+@keyframes pulseBuff { 0% { transform: scale(1); filter: brightness(1); } 50% { transform: scale(1.05); filter: brightness(1.5) drop-shadow(0 0 10px #4a8cff); } 100% { transform: scale(1); filter: brightness(1); } }
 @keyframes fadeOutDown { 0% { opacity: 1; transform: translateY(0) scale(1); filter: grayscale(0%); } 100% { opacity: 0; transform: translateY(30px) scale(0.9); filter: grayscale(100%); } }
 @keyframes fadeOutUp { 0% { opacity: 1; transform: translateY(0) scale(1); filter: brightness(1); } 50% { filter: brightness(2); } 100% { opacity: 0; transform: translateY(-30px) scale(1.1); filter: brightness(0); } }
 .anim-attack .flip-card-inner { animation: lungeUp 0.4s ease forwards; }
 .anim-damage .flip-card-inner { animation: shakeDamage 0.4s ease forwards; }
+.anim-buff .flip-card-inner { animation: pulseBuff 0.6s ease forwards; }
 .anim-death { animation: fadeOutDown 0.6s ease forwards; pointer-events: none; }
 .anim-consume { animation: fadeOutUp 0.6s ease forwards; pointer-events: none; }
 .stButton button { width: 100%; border-radius: 8px; font-weight: bold; margin-top: 5px; }
@@ -163,7 +164,6 @@ def fetch_ai_image(card_name: str, card_type: str, theme: str):
         headers = {"Authorization": f"Bearer {hf_token}"}
         payload = {"inputs": prompt_text}
         
-        # Uses the newly updated router endpoint
         response = requests.post(get_url_hf(), headers=headers, json=payload, timeout=30)
 
         if response.status_code == 200:
@@ -196,6 +196,7 @@ def setup_game(theme):
             new_card['ability_used'] = False
             new_card['is_dead'] = False
             new_card['is_consumed'] = False
+            new_card['applied_buffs'] = [] # New: Tracking list for applied buffs
             
             if new_card['name'] in db:
                 new_card['image'] = db[new_card['name']]
@@ -242,11 +243,19 @@ def apply_buff(buff_id, target_id):
     buff_card = next((c for c in st.session_state.hand if c['id'] == buff_id), None)
     target_card = next((c for c in st.session_state.board if c['id'] == target_id), None)
     if not buff_card or not target_card: return
+    
     mods = buff_card.get('stat_modifier', {})
     atk_mod = mods.get('atk', 0)
     def_mod = mods.get('def', 0)
+    
     target_card['atk'] = target_card.get('atk', 0) + atk_mod
     target_card['def'] = target_card.get('def', 0) + def_mod
+    
+    # Store the buff name for the UI
+    if 'applied_buffs' not in target_card:
+        target_card['applied_buffs'] = []
+    target_card['applied_buffs'].append(buff_card['name'])
+    
     buff_card['is_consumed'] = True 
     log_event(f"✨ Applied {buff_card['name']} to {target_card['name']} (+{atk_mod} ATK, +{def_mod} DEF)!")
     st.session_state.animation_state = {'type': 'buff', 'target_id': target_card['id']}
@@ -336,23 +345,32 @@ def render_card(card, location_type, is_enemy=False):
     
     anim_state = st.session_state.get('animation_state', {})
     if anim_state.get('attacker_id') == card['id']: wrapper_classes.append("anim-attack")
-    if anim_state.get('target_id') == card['id']: wrapper_classes.append("anim-damage")
+    if anim_state.get('target_id') == card['id']: 
+        if anim_state.get('type') == 'buff':
+            wrapper_classes.append("anim-buff")
+        else:
+            wrapper_classes.append("anim-damage")
+            
     if card.get('is_dead'): wrapper_classes.append("anim-death")
     if card.get('is_consumed'): wrapper_classes.append("anim-consume")
 
     html = f"<div class='flip-card {' '.join(wrapper_classes)}'>"
-    html += "<label style='display:block; width:100%; height:100%; margin:0; cursor:pointer;'>"
-    html += "<input type='checkbox' class='flip-checkbox' style='display:none;'>"
+    # CRITICAL BUG FIX: Added explicit 'for' and 'id' so the browser never gets confused about which card to flip
+    html += f"<label style='display:block; width:100%; height:100%; margin:0; cursor:pointer;' for='flip_{card_key}'>"
+    html += f"<input type='checkbox' id='flip_{card_key}' class='flip-checkbox' style='display:none;'>"
     html += "<div class='flip-card-inner'>"
     
     html += "<div class='flip-card-front'>"
     html += f"<img src='{card.get('image', '')}' style='width:100%; height:100%; object-fit:cover; opacity:0.9; background-color: #2b2b36;'>"
     
     if card.get('type') == 'Attack':
+        # NEW: Visual indicator on the front if the card is buffed
+        buff_indicator = " ✨" if card.get('applied_buffs') else ""
         html += "<div style='position:absolute; bottom:35px; width:100%; display:flex; justify-content:space-between; padding:0 10px; font-weight:bold; font-size:16px; text-shadow:1px 1px 2px #000;'>"
         html += f"<span style='background:rgba(200,40,40,0.9); padding:2px 8px; border-radius:4px;'>⚔️ {card.get('atk', 0)}</span>"
-        html += f"<span style='background:rgba(40,100,200,0.9); padding:2px 8px; border-radius:4px;'>🛡️ {card.get('def', 0)}</span>"
+        html += f"<span style='background:rgba(40,100,200,0.9); padding:2px 8px; border-radius:4px;'>🛡️ {card.get('def', 0)}{buff_indicator}</span>"
         html += "</div>"
+        
     html += "<div style='position:absolute; bottom:0; width:100%; background:rgba(0,0,0,0.85); padding:8px; border-top:1px solid #555;'>"
     html += f"<h4 style='margin:0; font-size:14px;'>{card['name']}</h4>"
     html += "</div></div>"
@@ -362,6 +380,12 @@ def render_card(card, location_type, is_enemy=False):
     html += f"<h4 style='margin:0 0 5px 0; border-bottom:1px solid #555; padding-bottom:5px; font-size:16px;'>{card['name']}</h4>"
     html += f"<p style='margin:0 0 10px 0; font-size:11px; color:#aaa;'>[{card['type']} - {card.get('rarity')}]</p>"
     html += f"<p style='margin:0; font-size:12px; font-style:italic; color:#ddd;'>\"{card.get('desc', 'No lore.')}\"</p>"
+    
+    # NEW: Clearly lists the buffs applied to this card on the back
+    if card.get('applied_buffs'):
+        buff_list = ', '.join(card['applied_buffs'])
+        html += f"<div style='margin-top: 10px; font-size: 11px; color: #4a8cff; background:rgba(74,140,255,0.1); padding: 5px; border-radius: 4px;'><b>✨ Applied Buffs:</b><br>{buff_list}</div>"
+        
     html += "</div>"
     
     if 'ability' in card:
@@ -418,8 +442,8 @@ def render_card(card, location_type, is_enemy=False):
                 resolve_attack(st.session_state.selected_attacker, card['id'])
                 st.session_state.selected_attacker = None; st.rerun()
 
-        # --- THE HUGGING FACE LAZY LOADER BUTTON ---
-        if not card.get('has_ai_art', False) and not is_enemy:
+        # --- THE HUGGING FACE LAZY LOADER BUTTON (Now Available on ALL unpainted cards) ---
+        if not card.get('has_ai_art', False):
             if st.button("🎨 Paint AI Art", key=f"paint_{card_key}"):
                 with st.spinner(f"Hugging Face is painting {card['name']}..."):
                     new_img, error_msg = fetch_ai_image(card['name'], card.get('type', 'Attack'), st.session_state.theme)
