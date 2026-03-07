@@ -14,7 +14,10 @@ st.set_page_config(page_title="AI Card Battler", layout="wide", initial_sidebar_
 # --- Base64 URL Decoders ---
 def get_url_jsonbin(): return base64.b64decode("aHR0cHM6Ly9hcGkuanNvbmJpbi5pby92My9iLw==").decode("utf-8")
 def get_url_placeholder(): return base64.b64decode("aHR0cHM6Ly9wbGFjZWhvbGQuY28vMjU2eDM4NC8yYjJiMzYvODg4ODg4LnBuZz90ZXh0PQ==").decode("utf-8")
-def get_url_hf(): return base64.b64decode("aHR0cHM6Ly9yb3V0ZXIuaHVnZ2luZ2ZhY2UuY28vaGYtaW5mZXJlbmNlL21vZGVscy9ibGFjay1mb3Jlc3QtbGFicy9GTFVYLjEtc2NobmVsbA==").decode("utf-8")
+# Primary Model: FLUX
+def get_url_hf_flux(): return base64.b64decode("aHR0cHM6Ly9yb3V0ZXIuaHVnZ2luZ2ZhY2UuY28vaGYtaW5mZXJlbmNlL21vZGVscy9ibGFjay1mb3Jlc3QtbGFicy9GTFVYLjEtc2NobmVsbA==").decode("utf-8")
+# Fallback Model: Stable Diffusion XL (More lenient limits)
+def get_url_hf_sdxl(): return base64.b64decode("aHR0cHM6Ly9yb3V0ZXIuaHVnZ2luZ2ZhY2UuY28vaGYtaW5mZXJlbmNlL21vZGVscy9zdGFiaWxpdHlhaS9zdGFibGUtZGlmZnVzaW9uLXhsLWJhc2UtMS4w").decode("utf-8")
 
 # --- Cloud Repository System ---
 def load_repository():
@@ -54,16 +57,18 @@ def sync_art_across_game(card_name, image_data):
             if c['name'] == card_name:
                 c['image'] = image_data
                 c['has_ai_art'] = True
+                c['art_error'] = None # Clear errors
 
-# --- NEW: Automated Just-In-Time Rendering Engine ---
+# --- Automated Just-In-Time Rendering Engine ---
 def ensure_card_art(card, theme):
-    """Automatically fetches, saves, and syncs card art with explicit error toasting."""
+    """Automatically fetches, saves, and syncs card art with persistent error tracking."""
     if card.get('has_ai_art', False): return
     
     db = load_repository()
     if card['name'] in db:
         card['image'] = db[card['name']]
         card['has_ai_art'] = True
+        card['art_error'] = None
         return
         
     for attempt in range(2):
@@ -71,14 +76,15 @@ def ensure_card_art(card, theme):
         if new_img:
             card['image'] = new_img
             card['has_ai_art'] = True
+            card['art_error'] = None
             save_to_repository(card['name'], new_img)
             sync_art_across_game(card['name'], new_img)
             return
         elif error_msg and "waking up" in error_msg and attempt == 0:
             time.sleep(5) 
         else:
-            # LIVE DIAGNOSTIC: This pops up a small notification so you can see exactly why it failed
-            st.toast(f"Failed to paint '{card['name']}': {error_msg}", icon="🛑")
+            # LIVE DIAGNOSTIC: Locks the exact API error to the card so you can read it!
+            card['art_error'] = error_msg
             break
 
 # --- Global CSS ---
@@ -212,23 +218,24 @@ def fetch_ai_image(card_name: str, card_type: str, theme: str):
     try:
         headers = {"Authorization": f"Bearer {hf_token}"}
         payload = {"inputs": prompt_text}
-        response = requests.post(get_url_hf(), headers=headers, json=payload, timeout=30)
         
+        # ATTEMPT 1: Try the primary FLUX model
+        response = requests.post(get_url_hf_flux(), headers=headers, json=payload, timeout=30)
+        
+        # AUTOMATIC FALLBACK: If FLUX hits a monthly quota limit or rate limit, automatically reroute to SDXL
+        if response.status_code == 429 or "quota" in response.text.lower():
+            response = requests.post(get_url_hf_sdxl(), headers=headers, json=payload, timeout=30)
+
         if response.status_code == 200:
             b64 = base64.b64encode(response.content).decode('utf-8')
             return f"data:image/jpeg;base64,{b64}", None
         elif response.status_code == 503:
-            return None, "Model is waking up"
-        elif response.status_code == 429:
-            return None, "Rate Limit Exceeded (Too many requests too quickly)"
+            return None, "Model is currently waking up on Hugging Face."
         else:
-            # Safely extract HF detailed error string if available
             err_txt = response.text
-            try:
-                err_json = response.json()
-                if 'error' in err_json: err_txt = err_json['error']
+            try: err_txt = response.json().get('error', err_txt)
             except: pass
-            return None, f"API Error {response.status_code}: {err_txt}"
+            return None, f"HF Error {response.status_code}: {err_txt}"
     except Exception as e:
         return None, str(e) 
 
@@ -269,6 +276,7 @@ def setup_game(theme):
             new_card['is_consumed'] = False
             new_card['applied_buffs'] = [] 
             new_card['sick'] = True
+            new_card['art_error'] = None # Used to display errors persistently
             
             if new_card['name'] in db:
                 new_card['image'] = db[new_card['name']]
@@ -299,12 +307,11 @@ def setup_game(theme):
     st.session_state.game_active = True
     st.session_state.game_over = False
 
-    # AUTOMATION 1: JIT Render Starting Hand with Pacing
     with st.spinner("Painting your starting hand (Spacing requests to prevent limits)..."):
         for card in st.session_state.hand:
             if not card.get('has_ai_art'):
                 ensure_card_art(card, theme)
-                time.sleep(1.5) # Prevents Hugging Face 429 Too Many Requests Error
+                time.sleep(1.5) 
 
 def play_card(card_id, is_player=True):
     if is_player and st.session_state.current_ap < 1: 
@@ -354,13 +361,11 @@ def apply_buff(buff_id, target_id):
     if not buff_card or not target_card: return
     
     st.session_state.current_ap -= 1
-    
     mods = buff_card.get('stat_modifier', {})
     if not isinstance(mods, dict): mods = {'atk': 1, 'def': 1}
     
     atk_mod = mods.get('atk', 0)
     def_mod = mods.get('def', 0)
-    
     target_card['atk'] = target_card.get('atk', 0) + atk_mod
     target_card['def'] = target_card.get('def', 0) + def_mod
     
@@ -472,7 +477,7 @@ def execute_enemy_turn():
     if st.session_state.enemy_hand and len(st.session_state.enemy_board) < 5:
         for c in st.session_state.enemy_hand:
             if c.get('type') == 'Attack':
-                if not c['has_ai_art']:
+                if not c.get('has_ai_art'):
                     with st.spinner(f"Enemy deploying {c['name']}..."):
                         ensure_card_art(c, st.session_state.theme)
                 play_card(c['id'], is_player=False)
@@ -549,34 +554,28 @@ def render_card(card, location_type, is_enemy=False, is_hidden=False):
     html += f"<input type='checkbox' id='flip_{card_key}' class='flip-checkbox' style='display:none;'>"
     html += "<div class='flip-card-inner'>"
     
-    # --- FRONT OF CARD ---
     html += "<div class='flip-card-front'>"
     html += ap_badge
     html += f"<img src='{card.get('image', '')}' style='width:100%; height:100%; object-fit:cover; opacity:0.9; background-color: #2b2b36;'>"
     
     html += "<div style='position:absolute; top:10px; width:100%; display:flex; justify-content:space-between; align-items:flex-start; padding:0 10px; font-weight:bold; font-size:16px; text-shadow:2px 2px 4px #000; z-index: 5;'>"
-    
     if card.get('type') == 'Attack':
         buff_indicator = " ✨" if card.get('applied_buffs') else ""
         sick_indicator = " 💤" if card.get('sick', False) else ""
         html += f"<span style='background:rgba(200,40,40,0.9); padding:2px 8px; border-radius:4px;'>⚔️ {card.get('atk', 0)}{sick_indicator}</span>"
     else:
         html += "<span style='width:40px;'></span>" 
-        
     html += f"<span style='background:rgba(0,0,0,0.8); padding:2px 8px; border-radius:10px; font-size:10px; font-weight:bold; text-transform:uppercase; letter-spacing:1px; border:1px solid #555; text-shadow:none; margin-top:2px;'>{card.get('type', 'Unknown')}</span>"
-    
     if card.get('type') == 'Attack':
         html += f"<span style='background:rgba(40,100,200,0.9); padding:2px 8px; border-radius:4px;'>🛡️ {card.get('def', 0)}{buff_indicator}</span>"
     else:
         html += "<span style='width:40px;'></span>"
-
     html += "</div>"
     
     html += "<div style='position:absolute; bottom:0; width:100%; background:rgba(0,0,0,0.85); padding:8px; border-top:1px solid #555; z-index: 5;'>"
     html += f"<h4 style='margin:0; font-size:14px; text-overflow: ellipsis; white-space: nowrap; overflow:hidden;'>{card['name']}</h4>"
     html += "</div></div>"
 
-    # --- BACK OF CARD ---
     html += "<div class='flip-card-back'>"
     html += "<div style='padding:15px; flex-grow:1; overflow-y:auto;'>"
     html += f"<h4 style='margin:0 0 5px 0; border-bottom:1px solid #555; padding-bottom:5px; font-size:16px;'>{card['name']}</h4>"
@@ -598,8 +597,13 @@ def render_card(card, location_type, is_enemy=False, is_hidden=False):
         mods = card.get('stat_modifier', {})
         if not isinstance(mods, dict): mods = {'atk': 1, 'def': 1}
         html += f"<div style='padding:10px; font-weight:bold; font-size:14px; border-top:1px solid #555; background:rgba(0,0,0,0.4); text-align:center; margin-top:auto;'>Buff: +{mods.get('atk',0)} ATK / +{mods.get('def',0)} DEF</div>"
-
     html += "</div></div></label></div>"
+    
+    # LIVE DIAGNOSTIC: Persistent Error Message Block
+    if not card.get('has_ai_art', False) and not is_enemy:
+        if card.get('art_error'):
+            html += f"<div style='background:rgba(255,50,50,0.2); border:1px solid #ff4a4a; color:#ffaaaa; font-size:10px; padding:4px; border-radius:4px; margin: 4px auto; text-align:center; max-width: 240px; line-height:1.2;'>{card['art_error']}</div>"
+            
     st.markdown(html, unsafe_allow_html=True)
 
     # --- Interaction Buttons ---
@@ -620,8 +624,7 @@ def render_card(card, location_type, is_enemy=False, is_hidden=False):
                         st.session_state.selected_buff = card['id']
                         st.session_state.selected_attacker = None; st.rerun()
                 
-                if is_selected_buff:
-                    st.info("⬆️ Select board target")
+                if is_selected_buff: st.info("⬆️ Select board target")
 
         elif not is_enemy and location_type == 'board':
             if is_targetable_friendly:
@@ -647,9 +650,9 @@ def render_card(card, location_type, is_enemy=False, is_hidden=False):
                 resolve_attack(st.session_state.selected_attacker, card['id'])
                 st.session_state.selected_attacker = None; st.rerun()
 
-        # LIVE DIAGNOSTIC: The "Retry Art" Fallback button 
+        # LIVE DIAGNOSTIC: Fallback Manual Retry Button
         if not card.get('has_ai_art', False) and not is_enemy:
-            if st.button("🔄 Retry Art", key=f"paint_{card_key}", use_container_width=True):
+            if st.button("🔄 Retry Art", key=f"paint_{card_key}"):
                 with st.spinner(f"Retrying {card['name']}..."):
                     ensure_card_art(card, st.session_state.theme)
                     st.rerun()
@@ -675,7 +678,6 @@ elif st.session_state.game_over:
         st.rerun()
 
 else:
-    # --- ENEMY HUD ---
     col1, col2, col3 = st.columns([2, 6, 2])
     with col1: st.markdown(f"<div class='hud-box'><h3 style='color:#ff4a4a; margin:0;'>Enemy Leader</h3><h2>❤️ {st.session_state.enemy_hp}</h2></div>", unsafe_allow_html=True)
     with col2:
@@ -685,9 +687,7 @@ else:
                 with ehand_cols[i]: render_card(card, "ehand", is_enemy=True, is_hidden=True)
     with col3: st.markdown(f"<div class='hud-box' style='font-size:12px;'><br><b>Cards in Deck:</b> {len(st.session_state.enemy_deck)}<br><b>Cards in Hand:</b> {len(st.session_state.enemy_hand)}</div>", unsafe_allow_html=True)
 
-    # --- THE PLAYMAT ---
     st.markdown("<div class='playmat-container'>", unsafe_allow_html=True)
-    
     ecols = st.columns([1, 8, 1])
     with ecols[1]:
         slots = st.columns(5)
@@ -715,7 +715,6 @@ else:
                 
     st.markdown("</div><br>", unsafe_allow_html=True)
 
-    # --- PLAYER HUD & HAND ---
     col1, col2, col3 = st.columns([2, 6, 2])
     with col1: 
         ap_color = "#4a8cff" if st.session_state.current_ap > 0 else "#ff4a4a"
@@ -729,7 +728,6 @@ else:
 
     with col3:
         if st.button("⏭️ END TURN", use_container_width=True, type="primary"): end_turn(); st.rerun()
-        
         if st.session_state.selected_attacker:
             if not has_taunt(st.session_state.enemy_board):
                 if st.button("🎯 Attack Enemy Leader", key="tgt_enemy", type="primary", use_container_width=True):
@@ -737,7 +735,6 @@ else:
                     st.session_state.selected_attacker = None; st.rerun()
             else:
                 st.error("Taunt blocks Leader!")
-                
         with st.expander("📜 Battle Log", expanded=False):
             for log in st.session_state.battle_log: 
                 st.markdown(f"<div style='font-size:12px; margin-bottom:4px; padding:4px; background:rgba(255,255,255,0.05); border-left: 2px solid #666;'>{log}</div>", unsafe_allow_html=True)
