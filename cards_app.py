@@ -57,10 +57,9 @@ def sync_art_across_game(card_name, image_data):
 
 # --- NEW: Automated Just-In-Time Rendering Engine ---
 def ensure_card_art(card, theme):
-    """Automatically fetches, saves, and syncs card art with a built-in retry for waking models."""
+    """Automatically fetches, saves, and syncs card art with explicit error toasting."""
     if card.get('has_ai_art', False): return
     
-    # Fast-check the database just in case it was painted in the background
     db = load_repository()
     if card['name'] in db:
         card['image'] = db[card['name']]
@@ -75,10 +74,12 @@ def ensure_card_art(card, theme):
             save_to_repository(card['name'], new_img)
             sync_art_across_game(card['name'], new_img)
             return
-        elif "waking up" in error_msg and attempt == 0:
-            time.sleep(5) # Give Hugging Face 5 seconds to wake up, then try once more
+        elif error_msg and "waking up" in error_msg and attempt == 0:
+            time.sleep(5) 
         else:
-            break # Fails gracefully, leaves the placeholder intact
+            # LIVE DIAGNOSTIC: This pops up a small notification so you can see exactly why it failed
+            st.toast(f"Failed to paint '{card['name']}': {error_msg}", icon="🛑")
+            break
 
 # --- Global CSS ---
 st.markdown("""
@@ -212,13 +213,22 @@ def fetch_ai_image(card_name: str, card_type: str, theme: str):
         headers = {"Authorization": f"Bearer {hf_token}"}
         payload = {"inputs": prompt_text}
         response = requests.post(get_url_hf(), headers=headers, json=payload, timeout=30)
+        
         if response.status_code == 200:
             b64 = base64.b64encode(response.content).decode('utf-8')
             return f"data:image/jpeg;base64,{b64}", None
         elif response.status_code == 503:
             return None, "Model is waking up"
+        elif response.status_code == 429:
+            return None, "Rate Limit Exceeded (Too many requests too quickly)"
         else:
-            return None, f"HF API Error {response.status_code}"
+            # Safely extract HF detailed error string if available
+            err_txt = response.text
+            try:
+                err_json = response.json()
+                if 'error' in err_json: err_txt = err_json['error']
+            except: pass
+            return None, f"API Error {response.status_code}: {err_txt}"
     except Exception as e:
         return None, str(e) 
 
@@ -289,10 +299,12 @@ def setup_game(theme):
     st.session_state.game_active = True
     st.session_state.game_over = False
 
-    # AUTOMATION 1: JIT Render Starting Hand
-    with st.spinner("Painting your starting hand..."):
+    # AUTOMATION 1: JIT Render Starting Hand with Pacing
+    with st.spinner("Painting your starting hand (Spacing requests to prevent limits)..."):
         for card in st.session_state.hand:
-            ensure_card_art(card, theme)
+            if not card.get('has_ai_art'):
+                ensure_card_art(card, theme)
+                time.sleep(1.5) # Prevents Hugging Face 429 Too Many Requests Error
 
 def play_card(card_id, is_player=True):
     if is_player and st.session_state.current_ap < 1: 
@@ -303,6 +315,7 @@ def play_card(card_id, is_player=True):
         st.warning("Board is full! Max 5 units."); return
 
     cleanup_dead_cards()
+    
     hand = list(st.session_state.hand if is_player else st.session_state.enemy_hand)
     deck = list(st.session_state.deck if is_player else st.session_state.enemy_deck)
     board = list(st.session_state.board if is_player else st.session_state.enemy_board)
@@ -314,7 +327,6 @@ def play_card(card_id, is_player=True):
     card['sick'] = True
     board.append(card)
     
-    # AUTOMATION 2: JIT Render Drawn Cards
     if deck: 
         drawn_card = deck.pop()
         if is_player and not drawn_card['has_ai_art']:
@@ -342,11 +354,13 @@ def apply_buff(buff_id, target_id):
     if not buff_card or not target_card: return
     
     st.session_state.current_ap -= 1
+    
     mods = buff_card.get('stat_modifier', {})
     if not isinstance(mods, dict): mods = {'atk': 1, 'def': 1}
     
     atk_mod = mods.get('atk', 0)
     def_mod = mods.get('def', 0)
+    
     target_card['atk'] = target_card.get('atk', 0) + atk_mod
     target_card['def'] = target_card.get('def', 0) + def_mod
     
@@ -364,7 +378,6 @@ def apply_buff(buff_id, target_id):
     st.session_state.board = list(st.session_state.board)
     hand = list(st.session_state.hand)
     
-    # AUTOMATION 2: JIT Render Drawn Cards (after buff cast)
     if st.session_state.deck: 
         drawn_card = st.session_state.deck.pop()
         if not drawn_card['has_ai_art']:
@@ -459,7 +472,6 @@ def execute_enemy_turn():
     if st.session_state.enemy_hand and len(st.session_state.enemy_board) < 5:
         for c in st.session_state.enemy_hand:
             if c.get('type') == 'Attack':
-                # AUTOMATION 3: JIT Render Enemy Played Cards
                 if not c['has_ai_art']:
                     with st.spinner(f"Enemy deploying {c['name']}..."):
                         ensure_card_art(c, st.session_state.theme)
@@ -634,6 +646,13 @@ def render_card(card, location_type, is_enemy=False, is_hidden=False):
             if st.button("🎯 Strike", key=f"tgt_{card_key}", type="primary"):
                 resolve_attack(st.session_state.selected_attacker, card['id'])
                 st.session_state.selected_attacker = None; st.rerun()
+
+        # LIVE DIAGNOSTIC: The "Retry Art" Fallback button 
+        if not card.get('has_ai_art', False) and not is_enemy:
+            if st.button("🔄 Retry Art", key=f"paint_{card_key}", use_container_width=True):
+                with st.spinner(f"Retrying {card['name']}..."):
+                    ensure_card_art(card, st.session_state.theme)
+                    st.rerun()
 
 def render_empty_slot():
     st.markdown("<div class='empty-slot'>Empty Slot</div>", unsafe_allow_html=True)
